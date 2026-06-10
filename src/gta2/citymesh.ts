@@ -98,6 +98,19 @@ export function buildChunkGeometry(
   const cutout = emptyGeom();
   const pick = (f: Face) => (f.flat || transparent.has(f.tile) ? cutout : solid);
 
+  // Tiles >= 992 are virtual animation slots (water, neon...): render the
+  // first frame of their ANIM entry. Unmapped virtual tiles are invisible.
+  const animFirst = new Map<number, number>();
+  for (const a of map.animations) {
+    if (a.tiles.length > 0) animFirst.set(a.base, a.tiles[0]);
+  }
+  const fix = (f: Face): Face => {
+    const mapped = animFirst.get(f.tile);
+    if (mapped !== undefined) return { ...f, tile: mapped };
+    if (f.tile >= 992) return { ...f, tile: 0 };
+    return f;
+  };
+
   for (let by = cy * CHUNK; by < (cy + 1) * CHUNK; by++) {
     for (let bx = cx * CHUNK; bx < (cx + 1) * CHUNK; bx++) {
       if (bx >= MAP_SIZE || by >= MAP_SIZE) continue;
@@ -108,11 +121,11 @@ export function buildChunkGeometry(
         if (!b) continue;
         const slope = slopeType(b);
         const c = slopeCorners(slope);
-        const lid = decodeLid(b.lid);
-        const left = decodeSide(b.left);
-        const right = decodeSide(b.right);
-        const top = decodeSide(b.top);
-        const bottom = decodeSide(b.bottom);
+        const lid = fix(decodeLid(b.lid));
+        const left = fix(decodeSide(b.left));
+        const right = fix(decodeSide(b.right));
+        const top = fix(decodeSide(b.top));
+        const bottom = fix(decodeSide(b.bottom));
         const zNW = z + c.nw;
         const zNE = z + c.ne;
         const zSW = z + c.sw;

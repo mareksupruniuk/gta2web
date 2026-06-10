@@ -57,6 +57,8 @@ export class CityRenderer {
   private decals: THREE.Mesh[] = [];
   private eye = EYE_FOOT;
   private shake = 0;
+  private leadX = 0;
+  private leadY = 0;
 
   private constructor(mount: HTMLElement, sty: Sty) {
     this.sty = sty;
@@ -277,7 +279,7 @@ export class CityRenderer {
   // ---------------------------------------------------------------- frame
 
   /** Per-frame: advance effects and position the chase camera. */
-  update(dt: number, focus: { x: number; y: number; z: number; speed: number; driving: boolean }): void {
+  update(dt: number, focus: { x: number; y: number; z: number; speed: number; driving: boolean; vx?: number; vy?: number }): void {
     this.effects = this.effects.filter((e) => {
       e.ttl -= dt;
       if (e.ttl <= 0) {
@@ -302,8 +304,18 @@ export class CityRenderer {
     const sx = this.shake > 0 ? (Math.random() - 0.5) * this.shake * 0.5 : 0;
     const sy = this.shake > 0 ? (Math.random() - 0.5) * this.shake * 0.5 : 0;
 
-    this.camera.position.set(focus.x + sx, -focus.y + sy, focus.z + this.eye);
-    this.camera.lookAt(focus.x + sx, -focus.y + sy, focus.z);
+    // GTA2's camera looks ahead of a moving car.
+    const clamp = (v: number, m: number) => Math.max(-m, Math.min(m, v));
+    const tlx = clamp((focus.vx ?? 0) * 0.55, 2.6);
+    const tly = clamp((focus.vy ?? 0) * 0.55, 2.6);
+    const ease = Math.min(1, dt * 1.6);
+    this.leadX += (tlx - this.leadX) * ease;
+    this.leadY += (tly - this.leadY) * ease;
+
+    const cx = focus.x + this.leadX + sx;
+    const cy = -(focus.y + this.leadY) + sy;
+    this.camera.position.set(cx, cy, focus.z + this.eye);
+    this.camera.lookAt(cx, cy, focus.z);
     this.three.render(this.scene, this.camera);
   }
 }

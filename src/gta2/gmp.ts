@@ -97,12 +97,20 @@ export interface MapZone {
   name: string;
 }
 
+export interface TileAnimation {
+  base: number; // the tile number that animates
+  frameRate: number;
+  repeat: number;
+  tiles: number[];
+}
+
 export interface GmpMap {
   /** base[y*256+x] = offset (in u32 words) into columnWords for that column */
   base: Uint32Array;
   columnWords: Uint32Array;
   blocks: BlockInfo[];
   zones: MapZone[];
+  animations: TileAnimation[];
   /** column lookup: top-of-ground height per (x,y), filled lazily */
   getColumn(x: number, y: number): Column;
   getBlock(x: number, y: number, z: number): BlockInfo | null;
@@ -122,6 +130,7 @@ class GmpImpl implements GmpMap {
   columnWords!: Uint32Array;
   blocks!: BlockInfo[];
   zones: MapZone[] = [];
+  animations: TileAnimation[] = [];
   private colCache = new Map<number, Column>();
 
   getColumn(x: number, y: number): Column {
@@ -188,6 +197,21 @@ export function parseGmp(buffer: ArrayBuffer): GmpMap {
     };
   }
   map.blocks = blocks;
+
+  const anim = chunks.get('ANIM');
+  if (anim) {
+    const ar = new BinReader(buffer, anim.offset, anim.size);
+    while (ar.pos + 6 <= anim.size) {
+      const base = ar.u16();
+      const frameRate = ar.u8();
+      const repeat = ar.u8();
+      const len = ar.u8();
+      ar.skip(1); // unused
+      const tiles: number[] = [];
+      for (let i = 0; i < len; i++) tiles.push(ar.u16());
+      map.animations.push({ base, frameRate, repeat, tiles });
+    }
+  }
 
   const zone = chunks.get('ZONE');
   if (zone) {

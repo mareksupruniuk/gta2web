@@ -289,6 +289,8 @@ function tick(now: number): void {
     x: p.pos.x, y: p.pos.y, z: p.z,
     speed: p.car ? p.car.speed() : 0,
     driving: !!p.car,
+    vx: p.car?.vel.x ?? 0,
+    vy: p.car?.vel.y ?? 0,
   });
   input.endFrame();
 }
