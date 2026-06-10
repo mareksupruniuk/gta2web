@@ -62,19 +62,27 @@ function closeMenuAndPlay(): void {
 
 async function startGame(): Promise<void> {
   world = new World();
+  (window as unknown as { __world: World }).__world = world; // debug/test hook
   renderer = await Renderer.create(world, $('game'));
   renderer.app.ticker.add((ticker) => frame(ticker.deltaMS / 1000, ticker));
   showMsg('Steal a car with ENTER. Stay alive.', 4);
 }
 
+// Edge-triggered actions are latched here until a sim step consumes them —
+// frames shorter than FIXED_DT run zero sim steps and must not eat presses.
+const pending = { enterExit: false, nextWeapon: false, prevWeapon: false };
+
 function readInput(): PlayerInput {
+  pending.enterExit ||= input.wasPressed('Enter', 'KeyF');
+  pending.nextWeapon ||= input.wasPressed('KeyE');
+  pending.prevWeapon ||= input.wasPressed('KeyQ');
   return {
     moveX: input.moveX(),
     moveY: input.moveY(),
-    attack: input.isDown('Space'),
-    enterExit: input.wasPressed('Enter', 'KeyF'),
-    nextWeapon: input.wasPressed('KeyE'),
-    prevWeapon: input.wasPressed('KeyQ'),
+    attack: input.isDown('Space') || input.wasPressed('Space'),
+    enterExit: pending.enterExit,
+    nextWeapon: pending.nextWeapon,
+    prevWeapon: pending.prevWeapon,
   };
 }
 
@@ -90,6 +98,11 @@ function frame(rawDt: number, ticker: import('pixi.js').Ticker): void {
       // Edge-triggered actions only apply on the first sim step of a frame.
       world.update(FIXED_DT, first ? pin : { ...pin, enterExit: false, nextWeapon: false, prevWeapon: false });
       accumulator -= FIXED_DT;
+      if (first) {
+        pending.enterExit = false;
+        pending.nextWeapon = false;
+        pending.prevWeapon = false;
+      }
       first = false;
     }
 

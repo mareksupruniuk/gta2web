@@ -9,7 +9,7 @@ import { angleDiff, DIR_ANGLE, GameEvent, TILE, Vec2, dist } from './types';
 
 const PED_TARGET = 70;
 const CAR_TARGET = 22;
-const ENTER_CAR_DIST = 42;
+const ENTER_CAR_DIST = 52;
 const CORPSE_TTL = 15;
 const WRECK_TTL = 25;
 const PICKUP_RESPAWN = 30;

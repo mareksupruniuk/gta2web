@@ -227,6 +227,17 @@ export class Renderer {
       }
       s.position.set(car.pos.x, car.pos.y);
       s.rotation = car.heading;
+      // Damaged cars trail smoke from the hood.
+      if (!car.exploded && car.health < 35 && Math.random() < 0.12) {
+        const nose = {
+          x: car.pos.x + Math.cos(car.heading) * car.type.length * 0.35,
+          y: car.pos.y + Math.sin(car.heading) * car.type.length * 0.35,
+        };
+        this.addEffect(smokeTexture(), nose, 0.7, {
+          fade: true, grow: 1.6,
+          vel: { x: (Math.random() - 0.5) * 20, y: (Math.random() - 0.5) * 20 - 10 },
+        });
+      }
     }
     for (const [id, s] of this.carSprites) {
       if (!seen.has(id)) {

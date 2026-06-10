@@ -2,3 +2,4 @@ node_modules/
 dist/
 assets-raw/**/*.zip
 .DS_Store
+.verify/

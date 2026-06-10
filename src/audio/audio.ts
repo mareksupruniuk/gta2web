@@ -10,11 +10,39 @@ const RATE_LIMIT_S = 0.03;
 const MASTER_LEVEL = 0.5;
 /** Crash speed at which crash volume reaches maximum. */
 const CRASH_REF_SPEED = 200;
+/** Engine loop playbackRate range driven by speedRatio. */
+const ENGINE_RATE_MIN = 0.6;
+const ENGINE_RATE_MAX = 1.6;
 
 /**
- * Synthesized audio for the game. All sounds are generated with the Web Audio
- * API (no asset files). Every public method is a safe no-op until init() has
- * been called from a user gesture.
+ * CC0 sample files served from public/sounds/ (see src/audio/README.md for
+ * the event mapping). Sources: OpenGameArt "Gunshots" by LarkPay,
+ * OpenGameArt "Racing car engine sound loops" by domasx2, OpenGameArt
+ * "Car Sound Effects Pack" by ggbotnet, and Kenney's Sci-Fi Sounds /
+ * Impact Sounds / Interface Sounds packs (all CC0 1.0; provenance in
+ * assets-raw/ATTRIBUTION.md).
+ */
+const SAMPLE_FILES = {
+  'shot-pistol': 'shot-pistol.wav',
+  'shot-uzi': 'shot-uzi.wav',
+  'shot-shotgun': 'shot-shotgun.wav',
+  'explosion-crunch': 'explosion-crunch.ogg',
+  'explosion-low': 'explosion-low.ogg',
+  'crash-metal': 'crash-metal.ogg',
+  'door-open': 'door-open.ogg',
+  'door-close': 'door-close.ogg',
+  pickup: 'pickup.ogg',
+  'ui-click': 'ui-click.ogg',
+  'engine-loop': 'engine-loop.wav',
+} as const;
+
+type SampleName = keyof typeof SAMPLE_FILES;
+
+/**
+ * Game audio: real CC0 samples (fetched and decoded asynchronously after
+ * init()) with the original Web Audio synthesis kept as a fallback for any
+ * sample that has not loaded (or failed to load). Every public method is a
+ * safe no-op until init() has been called from a user gesture.
  */
 export class AudioManager {
   enabled = true;
@@ -23,10 +51,19 @@ export class AudioManager {
   private master: GainNode | null = null;
   private noiseBuffer: AudioBuffer | null = null;
 
-  // Engine loop nodes (created lazily on first setEngine(true)).
+  /** Decoded CC0 samples, populated asynchronously after init(). */
+  private samples = new Map<SampleName, AudioBuffer>();
+  private samplesRequested = false;
+
+  // Synth engine loop nodes (fallback; created lazily on first setEngine(true)).
   private engineOsc: OscillatorNode | null = null;
+  private engineLfo: OscillatorNode | null = null;
   private engineFilter: BiquadFilterNode | null = null;
   private engineGain: GainNode | null = null;
+
+  // Sample engine loop nodes (used once the engine-loop sample has decoded).
+  private engineSrc: AudioBufferSourceNode | null = null;
+  private engineSrcGain: GainNode | null = null;
 
   /** End times (ctx time) of currently-playing one-shot voices. */
   private voiceEnds: number[] = [];
@@ -50,6 +87,7 @@ export class AudioManager {
     if (this.ctx.state === 'suspended') {
       void this.ctx.resume().catch(() => undefined);
     }
+    this.loadSamples();
   }
 
   setEnabled(on: boolean): void {
@@ -60,11 +98,22 @@ export class AudioManager {
     }
   }
 
-  /** Short UI click blip (not positional, no rate limit). */
+  /** Short UI click blip (not positional, no rate limit, no polyphony cap). */
   uiClick(): void {
     if (!this.ready()) return;
     const ctx = this.ctx!;
     const t = ctx.currentTime;
+    const buf = this.samples.get('ui-click');
+    if (buf) {
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      const g = ctx.createGain();
+      g.gain.value = 0.4;
+      src.connect(g);
+      g.connect(this.master!);
+      src.start(t);
+      return;
+    }
     const osc = ctx.createOscillator();
     osc.type = 'square';
     osc.frequency.setValueAtTime(1400, t);
@@ -125,11 +174,28 @@ export class AudioManager {
   setEngine(active: boolean, speedRatio: number): void {
     if (!this.ready()) return;
     const ctx = this.ctx!;
-    if (!this.engineOsc && active) this.createEngine(ctx);
-    if (!this.engineOsc || !this.engineFilter || !this.engineGain) return;
-
     const r = Math.min(1, Math.max(0, speedRatio));
     const t = ctx.currentTime;
+
+    // Prefer the seamless sample loop once it has decoded.
+    const loop = this.samples.get('engine-loop');
+    if (loop) {
+      if (this.engineOsc) this.stopSynthEngine(t); // hand over from synth
+      if (!this.engineSrc && active) this.createEngineSample(ctx, loop);
+      if (!this.engineSrc || !this.engineSrcGain) return;
+      if (active) {
+        const rate = ENGINE_RATE_MIN + (ENGINE_RATE_MAX - ENGINE_RATE_MIN) * r;
+        this.engineSrc.playbackRate.setTargetAtTime(rate, t, 0.08);
+        this.engineSrcGain.gain.setTargetAtTime(0.16 + 0.14 * r, t, 0.05);
+      } else {
+        this.engineSrcGain.gain.setTargetAtTime(0, t, 0.08);
+      }
+      return;
+    }
+
+    // Synth fallback while the sample is loading (or if it failed).
+    if (!this.engineOsc && active) this.createEngine(ctx);
+    if (!this.engineOsc || !this.engineFilter || !this.engineGain) return;
     if (active) {
       this.engineOsc.frequency.setTargetAtTime(70 + 150 * r, t, 0.08);
       this.engineFilter.frequency.setTargetAtTime(280 + 900 * r, t, 0.08);
@@ -153,6 +219,57 @@ export class AudioManager {
 
   private ready(): boolean {
     return this.ctx !== null && this.master !== null && this.noiseBuffer !== null;
+  }
+
+  /** Fire-and-forget fetch+decode of all samples. Failures keep synth fallback. */
+  private loadSamples(): void {
+    if (this.samplesRequested || !this.ctx) return;
+    this.samplesRequested = true;
+    const base = import.meta.env.BASE_URL ?? './';
+    for (const [name, file] of Object.entries(SAMPLE_FILES) as [SampleName, string][]) {
+      void fetch(`${base}sounds/${file}`)
+        .then((res) => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return res.arrayBuffer();
+        })
+        .then((data) => this.ctx!.decodeAudioData(data))
+        .then((buf) => {
+          this.samples.set(name, buf);
+        })
+        .catch(() => undefined);
+    }
+  }
+
+  /**
+   * Play a decoded one-shot sample. Returns false only when the sample is not
+   * loaded yet (caller should fall back to synth). When the polyphony cap is
+   * reached the sound is dropped but true is still returned.
+   */
+  private playSample(name: SampleName, gain: number, opts: { rate?: number; maxDur?: number } = {}): boolean {
+    const buf = this.samples.get(name);
+    if (!buf) return false;
+    const ctx = this.ctx!;
+    const rate = opts.rate ?? 1;
+    const natural = buf.duration / rate;
+    const dur = opts.maxDur !== undefined ? Math.min(opts.maxDur, natural) : natural;
+    if (!this.claimVoice(dur)) return true;
+    const t = ctx.currentTime;
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.playbackRate.value = rate;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(Math.max(0.0001, gain), t);
+    src.connect(g);
+    g.connect(this.master!);
+    src.start(t);
+    if (dur < natural) {
+      // Trim long tails with a quick fade so capped voices free up promptly.
+      const fade = Math.min(0.06, dur * 0.5);
+      g.gain.setValueAtTime(Math.max(0.0001, gain), t + dur - fade);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      src.stop(t + dur);
+    }
+    return true;
   }
 
   private distanceGain(pos: Vec2, listener: Vec2): number {
@@ -247,16 +364,21 @@ export class AudioManager {
     const t = this.ctx!.currentTime;
     switch (weapon) {
       case 'pistol':
+        // Slight rate jitter so rapid fire does not sound machine-stamped.
+        if (this.playSample('shot-pistol', 0.5 * gain, { rate: 0.96 + Math.random() * 0.08, maxDur: 1.0 })) return;
         if (!this.claimVoice(0.14)) return;
         // Sharp single crack.
         this.noiseBurst({ t, dur: 0.13, peak: 0.55 * gain, type: 'lowpass', freq: 3200, freqEnd: 500, q: 0.8 });
         break;
       case 'uzi':
+        // Snappier shot pitched up and trimmed short for high fire rates.
+        if (this.playSample('shot-uzi', 0.4 * gain, { rate: 1.3 + Math.random() * 0.1, maxDur: 0.3 })) return;
         if (!this.claimVoice(0.07)) return;
         // Short, snappy.
         this.noiseBurst({ t, dur: 0.06, peak: 0.4 * gain, type: 'lowpass', freq: 2600, freqEnd: 700, q: 0.7 });
         break;
       case 'shotgun':
+        if (this.playSample('shot-shotgun', 0.6 * gain, { maxDur: 1.6 })) return;
         if (!this.claimVoice(0.35)) return;
         // Boomy and wide: low boom plus mid blast.
         this.noiseBurst({ t, dur: 0.32, peak: 0.7 * gain, type: 'lowpass', freq: 1000, freqEnd: 150, q: 0.9 });
@@ -303,6 +425,8 @@ export class AudioManager {
 
   private playDoor(gain: number, entering: boolean): void {
     const t = this.ctx!.currentTime;
+    // Entering slams the door shut; exiting pops it open.
+    if (this.playSample(entering ? 'door-close' : 'door-open', 0.6 * gain)) return;
     if (!this.claimVoice(0.12)) return;
     // Metallic clunk: low thump + brief mid rattle.
     const freq = entering ? 140 : 170;
@@ -312,6 +436,7 @@ export class AudioManager {
 
   private playCrash(gain: number): void {
     const t = this.ctx!.currentTime;
+    if (this.playSample('crash-metal', 0.8 * gain, { rate: 0.9 + Math.random() * 0.2 })) return;
     if (!this.claimVoice(0.3)) return;
     // Metallic crunch: two resonant noise bands + low impact.
     this.noiseBurst({ t, dur: 0.25, peak: 0.45 * gain, type: 'bandpass', freq: 2200, freqEnd: 800, q: 1.8 });
@@ -321,6 +446,11 @@ export class AudioManager {
 
   private playExplosion(gain: number): void {
     const t = this.ctx!.currentTime;
+    if (this.playSample('explosion-crunch', 0.9 * gain)) {
+      // Layer a sub-bass thump under the crunch when available.
+      this.playSample('explosion-low', 0.7 * gain);
+      return;
+    }
     if (!this.claimVoice(1.2)) return;
     // Big low boom with long decay + sub sine drop.
     this.noiseBurst({ t, dur: 1.1, peak: 0.9 * gain, attack: 0.005, type: 'lowpass', freq: 900, freqEnd: 80, q: 1 });
@@ -329,6 +459,7 @@ export class AudioManager {
 
   private playPickup(gain: number): void {
     const t = this.ctx!.currentTime;
+    if (this.playSample('pickup', 0.5 * gain)) return;
     if (!this.claimVoice(0.25)) return;
     // Pleasant two-note blip (major third up).
     this.tone({ t, dur: 0.09, peak: 0.18 * gain, type: 'triangle', freq: 880 });
@@ -356,6 +487,33 @@ export class AudioManager {
   }
 
   // ----- engine loop -------------------------------------------------------
+
+  /** Seamless engine loop sample, pitched by playbackRate (0.6 - 1.6). */
+  private createEngineSample(ctx: AudioContext, buf: AudioBuffer): void {
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    src.playbackRate.value = ENGINE_RATE_MIN;
+    const gain = ctx.createGain();
+    gain.gain.value = 0;
+    src.connect(gain);
+    gain.connect(this.master!);
+    src.start();
+    this.engineSrc = src;
+    this.engineSrcGain = gain;
+  }
+
+  /** Fade out and dispose the synth engine (when handing over to the sample). */
+  private stopSynthEngine(t: number): void {
+    if (!this.engineOsc || !this.engineGain) return;
+    this.engineGain.gain.setTargetAtTime(0, t, 0.05);
+    this.engineOsc.stop(t + 0.4);
+    this.engineLfo?.stop(t + 0.4);
+    this.engineOsc = null;
+    this.engineLfo = null;
+    this.engineFilter = null;
+    this.engineGain = null;
+  }
 
   private createEngine(ctx: AudioContext): void {
     const osc = ctx.createOscillator();
@@ -386,6 +544,7 @@ export class AudioManager {
     lfo.start();
 
     this.engineOsc = osc;
+    this.engineLfo = lfo;
     this.engineFilter = filter;
     this.engineGain = gain;
   }
