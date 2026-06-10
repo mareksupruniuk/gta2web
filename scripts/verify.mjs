@@ -65,6 +65,18 @@ const stats = await page.evaluate(() => ({
 }));
 console.log('World stats:', JSON.stringify(stats));
 
+// Pause via ESC, resume via the menu button.
+await page.keyboard.press('Escape');
+const menuVisible = await page.evaluate(() => !document.getElementById('menu').classList.contains('hidden'));
+const resumeLabel = await page.locator('#btn-start').textContent();
+await page.click('#btn-start');
+const menuHidden = await page.evaluate(() => document.getElementById('menu').classList.contains('hidden'));
+if (!menuVisible || resumeLabel !== 'RESUME' || !menuHidden) {
+  console.error(`FAIL: pause/resume flow broken (visible=${menuVisible}, label=${resumeLabel}, hidden=${menuHidden})`);
+  process.exit(1);
+}
+console.log('Pause/resume OK');
+
 const hud = {
   health: await page.locator('#hud-health').textContent(),
   weapon: await page.locator('#hud-weapon').textContent(),

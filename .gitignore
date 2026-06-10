@@ -3,3 +3,5 @@ dist/
 assets-raw/**/*.zip
 .DS_Store
 .verify/
+assets-raw/*
+!assets-raw/ATTRIBUTION.md
