@@ -18,8 +18,14 @@ export interface SpriteEntry {
 
 export interface CarInfo {
   model: number;
-  sprite: number; // relative to first car sprite
-  w: number; // collision size in pixels (64 px = 1 block)
+  /**
+   * In the file this stores only how many sprites the car adds (0 or 1; 0 =
+   * shares the previous car's graphic). spriteIdx below is the resolved
+   * absolute sprite number.
+   */
+  sprite: number;
+  spriteIdx: number;
+  w: number; // size in pixels (64 px = 1 block)
   h: number;
   passengers: number;
   wreck: number;
@@ -207,7 +213,11 @@ export function parseSty(buffer: ArrayBuffer): Sty {
       for (let i = 0; i < numRemaps; i++) remaps.push(r.u8());
       const numDoors = r.u8();
       r.skip(numDoors * 2);
-      sty.cars.push({ model, sprite, w, h, passengers, wreck, rating, remaps });
+      // `sprite` in the file is a 0/1 sprite count; resolve the absolute
+      // sprite index by accumulating (car sprites start at base 0).
+      const prev = sty.cars[sty.cars.length - 1];
+      const spriteIdx = prev ? prev.spriteIdx + prev.sprite : 0;
+      sty.cars.push({ model, sprite, spriteIdx, w, h, passengers, wreck, rating, remaps });
     }
     if (r.pos !== cari.size) {
       throw new Error(`CARI parse mismatch: ended at ${r.pos} of ${cari.size}`);

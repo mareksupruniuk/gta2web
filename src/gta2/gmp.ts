@@ -70,11 +70,39 @@ export function groundType(b: BlockInfo): GroundType {
   return (b.slopeByte & 3) as GroundType;
 }
 
+export enum ZoneType {
+  GeneralPurpose = 0,
+  Navigation = 1,
+  TrafficLight = 2,
+  ArrowBlocker = 5,
+  RailwayPlatform = 6,
+  BusStop = 7,
+  GeneralTrigger = 8,
+  Information = 10,
+  RailwayEntry = 11,
+  RailwayExit = 12,
+  RailwayStop = 13,
+  Gang = 14,
+  LocalNavigation = 15,
+  Restart = 16,
+  ArrestRestart = 20,
+}
+
+export interface MapZone {
+  type: ZoneType;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  name: string;
+}
+
 export interface GmpMap {
   /** base[y*256+x] = offset (in u32 words) into columnWords for that column */
   base: Uint32Array;
   columnWords: Uint32Array;
   blocks: BlockInfo[];
+  zones: MapZone[];
   /** column lookup: top-of-ground height per (x,y), filled lazily */
   getColumn(x: number, y: number): Column;
   getBlock(x: number, y: number, z: number): BlockInfo | null;
@@ -93,6 +121,7 @@ class GmpImpl implements GmpMap {
   base!: Uint32Array;
   columnWords!: Uint32Array;
   blocks!: BlockInfo[];
+  zones: MapZone[] = [];
   private colCache = new Map<number, Column>();
 
   getColumn(x: number, y: number): Column {
@@ -159,5 +188,20 @@ export function parseGmp(buffer: ArrayBuffer): GmpMap {
     };
   }
   map.blocks = blocks;
+
+  const zone = chunks.get('ZONE');
+  if (zone) {
+    const zr = new BinReader(buffer, zone.offset, zone.size);
+    while (zr.pos + 6 <= zone.size) {
+      const type = zr.u8() as ZoneType;
+      const x = zr.u8();
+      const y = zr.u8();
+      const zw = zr.u8();
+      const zh = zr.u8();
+      const nameLen = zr.u8();
+      const name = zr.ascii(nameLen);
+      map.zones.push({ type, x, y, w: zw, h: zh, name });
+    }
+  }
   return map;
 }
