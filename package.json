@@ -11,9 +11,12 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "pixi.js": "^8.6.6"
+    "@types/three": "^0.184.1",
+    "pixi.js": "^8.6.6",
+    "three": "^0.184.0"
   },
   "devDependencies": {
+    "@types/node": "^25.9.2",
     "playwright": "^1.60.0",
     "typescript": "^5.7.3",
     "vite": "^6.1.0",

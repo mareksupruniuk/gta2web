@@ -5,3 +5,6 @@ assets-raw/**/*.zip
 .verify/
 assets-raw/*
 !assets-raw/ATTRIBUTION.md
+gamedata/*.gmp
+gamedata/*.sty
+public/gamedata
