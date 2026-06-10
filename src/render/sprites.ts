@@ -106,19 +106,21 @@ export function tileTexture(kind: string, variant = 0): Texture {
           ['#74525a', '#825d66'],
           ['#56605a', '#636e67'],
         ];
-        const [base, lite] = palettes[variant % palettes.length];
+        // low 2 bits: per-building palette; upper bits: per-tile detail variant
+        const detail = variant >> 2;
+        const [base, lite] = palettes[variant & 3];
         ctx.fillStyle = base;
         ctx.fillRect(0, 0, TILE, TILE);
         ctx.fillStyle = lite;
         ctx.fillRect(2, 2, TILE - 4, TILE - 4);
-        hashNoise(ctx, TILE, TILE, 55 + variant, 0.12);
+        hashNoise(ctx, TILE, TILE, 55 + detail, 0.12);
         // occasional roof furniture
-        if (variant % 5 === 0) {
+        if (detail % 5 === 0) {
           ctx.fillStyle = '#9aa0a6';
           ctx.fillRect(8, 8, 9, 9);
           ctx.strokeStyle = '#3c4043';
           ctx.strokeRect(8.5, 8.5, 8, 8);
-        } else if (variant % 7 === 3) {
+        } else if (detail % 7 === 3) {
           ctx.fillStyle = '#444';
           ctx.beginPath();
           ctx.arc(TILE / 2, TILE / 2, 5, 0, Math.PI * 2);

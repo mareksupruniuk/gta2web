@@ -203,7 +203,7 @@ export class World {
       if (dist(ped.pos, player.pos) > range + PED_RADIUS) continue;
       const a = Math.atan2(ped.pos.y - player.pos.y, ped.pos.x - player.pos.x);
       if (Math.abs(angleDiff(player.heading, a)) < 1.1) {
-        ped.applyDamage(damage, this.emit);
+        ped.applyDamage(damage, this.emit, player.pos);
         this.emit({ type: 'hit', pos: { ...ped.pos } });
         if (ped.dead) this.player.score += 10;
         return;
@@ -290,7 +290,7 @@ export class World {
         for (const ped of this.peds) {
           if (ped.dead) continue;
           if (dist(ped.pos, b.pos) < PED_RADIUS + 3) {
-            ped.applyDamage(b.damage, this.emit);
+            ped.applyDamage(b.damage, this.emit, { x: b.pos.x - b.vel.x, y: b.pos.y - b.vel.y });
             if (ped.dead) this.player.score += 10;
             this.emit({ type: 'hit', pos: { ...b.pos } });
             alive = false;
@@ -339,7 +339,7 @@ export class World {
       const e = this.events[i];
       if (e.type !== 'explosion') continue;
       for (const ped of this.peds) {
-        if (!ped.dead && dist(ped.pos, e.pos) < 70) ped.applyDamage(100, this.emit);
+        if (!ped.dead && dist(ped.pos, e.pos) < 70) ped.applyDamage(100, this.emit, e.pos);
       }
       for (const car of this.cars) {
         if (!car.exploded && dist(car.pos, e.pos) < 80) car.applyDamage(60, this.emit);

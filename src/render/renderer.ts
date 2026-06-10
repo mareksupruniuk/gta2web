@@ -97,9 +97,15 @@ export class Renderer {
           case Tile.Sidewalk:
             tex = tileTexture('sidewalk', variant);
             break;
-          case Tile.Building:
-            tex = tileTexture('building', variant);
+          case Tile.Building: {
+            // One palette per city block (block interiors start at tile 8,
+            // pitch 10) so each building reads as a single structure.
+            const bx = Math.floor((x - 8) / 10);
+            const by = Math.floor((y - 8) / 10);
+            const bh = Math.abs((bx * 2654435761) ^ (by * 40503)) & 3;
+            tex = tileTexture('building', bh | (variant << 2));
             break;
+          }
           case Tile.Water:
             tex = tileTexture('water', variant);
             break;

@@ -39,14 +39,14 @@ export class Ped {
     this.fleeTimer = 4;
   }
 
-  applyDamage(amount: number, emit: (e: GameEvent) => void): void {
+  applyDamage(amount: number, emit: (e: GameEvent) => void, threat?: Vec2): void {
     if (this.dead) return;
     this.health -= amount;
     if (this.health <= 0) {
       this.state = 'dead';
       emit({ type: 'ped_killed', pos: { ...this.pos } });
     } else {
-      this.panic(this.pos);
+      this.panic(threat ?? this.pos);
       emit({ type: 'ped_scream', pos: { ...this.pos } });
     }
   }

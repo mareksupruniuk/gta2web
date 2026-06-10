@@ -116,7 +116,7 @@ export function generateDowntown(seed = 1997): GameMap {
   for (const ry of ROAD_POSITIONS) {
     for (let x = first; x <= last; x++) {
       map.setTile(x, ry, Tile.Road);
-      map.setTile(x + 1, ry, Tile.Road);
+      map.setTile(x, ry + 1, Tile.Road);
     }
   }
 
