@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GTA2Web — Downtown</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+      #game { width: 100%; height: 100%; }
+      #game canvas { display: block; }
+
+      #menu {
+        position: absolute; inset: 0;
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        background: radial-gradient(ellipse at center, #1a1a2e 0%, #000 100%);
+        font-family: 'Arial Black', Arial, sans-serif;
+        z-index: 10;
+      }
+      #menu.hidden { display: none; }
+      #menu h1 {
+        color: #ffd700;
+        font-size: 64px;
+        letter-spacing: 4px;
+        text-shadow: 4px 4px 0 #b8000f, 8px 8px 12px rgba(0,0,0,0.8);
+        margin-bottom: 8px;
+        font-style: italic;
+      }
+      #menu h2 {
+        color: #888; font-size: 18px; letter-spacing: 8px; margin-bottom: 48px;
+        font-weight: normal;
+      }
+      #menu button {
+        font-family: inherit;
+        font-size: 24px;
+        color: #ddd;
+        background: transparent;
+        border: none;
+        padding: 12px 32px;
+        cursor: pointer;
+        letter-spacing: 2px;
+        transition: color 0.1s, transform 0.1s;
+      }
+      #menu button:hover, #menu button.selected {
+        color: #ffd700;
+        transform: scale(1.1);
+      }
+      #controls-panel {
+        display: none;
+        color: #aaa; font-family: monospace; font-size: 15px;
+        margin-top: 24px; line-height: 1.8; text-align: left;
+        background: rgba(0,0,0,0.5); padding: 16px 32px; border: 1px solid #333;
+      }
+      #controls-panel.visible { display: block; }
+      #menu .footer { position: absolute; bottom: 16px; color: #444; font-size: 12px; font-family: monospace; }
+
+      #hud {
+        position: absolute; top: 12px; left: 12px;
+        color: #fff; font-family: 'Arial Black', Arial, sans-serif;
+        text-shadow: 2px 2px 0 #000;
+        font-size: 18px; z-index: 5; pointer-events: none;
+        display: none;
+      }
+      #hud.visible { display: block; }
+      #hud .health { color: #ff4444; }
+      #hud .weapon { color: #ffd700; }
+      #hud .score { color: #44ff44; }
+      #msg {
+        position: absolute; bottom: 48px; left: 0; right: 0; text-align: center;
+        color: #ffd700; font-family: 'Arial Black', Arial, sans-serif; font-size: 22px;
+        text-shadow: 2px 2px 0 #000; z-index: 5; pointer-events: none;
+        opacity: 0; transition: opacity 0.3s;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="game"></div>
+    <div id="hud">
+      <div class="health">♥ <span id="hud-health">100</span></div>
+      <div class="weapon"><span id="hud-weapon">FISTS</span> <span id="hud-ammo"></span></div>
+      <div class="score">$ <span id="hud-score">0</span></div>
+    </div>
+    <div id="msg"></div>
+    <div id="menu">
+      <h1>GTA2WEB</h1>
+      <h2>DOWNTOWN DISTRICT</h2>
+      <button id="btn-start">PLAY</button>
+      <button id="btn-controls">CONTROLS</button>
+      <button id="btn-sound">SOUND: ON</button>
+      <div id="controls-panel">
+        WASD / Arrows ... move / drive<br />
+        SPACE ........... attack / handbrake<br />
+        ENTER / F ....... enter or exit car<br />
+        Q / E ........... switch weapon<br />
+        ESC ............. back to menu
+      </div>
+      <div class="footer">A GTA2-style homage built with original &amp; CC0 assets. Not affiliated with Rockstar Games.</div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
