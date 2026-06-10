@@ -12,7 +12,6 @@
   },
   "dependencies": {
     "@types/three": "^0.184.1",
-    "pixi.js": "^8.6.6",
     "three": "^0.184.0"
   },
   "devDependencies": {

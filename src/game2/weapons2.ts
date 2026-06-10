@@ -1,38 +1,36 @@
-import { Vec2, WeaponId } from './types';
+import { Vec2, WeaponId } from '../sim/types';
+
+/** Weapon definitions in block units (1 block = 1.0, GTA2's 64px). */
 
 export interface WeaponDef {
   id: WeaponId;
   name: string;
   damage: number;
-  /** seconds between shots */
   fireInterval: number;
-  /** bullets per trigger pull (shotgun pellets) */
   pellets: number;
-  /** total spread angle in radians */
   spread: number;
-  bulletSpeed: number;
-  range: number;
+  bulletSpeed: number; // blocks/s
+  range: number; // blocks
   automatic: boolean;
-  /** ammo granted by a pickup; Infinity for fists */
   pickupAmmo: number;
 }
 
 export const WEAPONS: Record<WeaponId, WeaponDef> = {
   fists: {
     id: 'fists', name: 'FISTS', damage: 8, fireInterval: 0.45, pellets: 1,
-    spread: 0, bulletSpeed: 0, range: 22, automatic: false, pickupAmmo: Infinity,
+    spread: 0, bulletSpeed: 0, range: 0.4, automatic: false, pickupAmmo: Infinity,
   },
   pistol: {
     id: 'pistol', name: 'PISTOL', damage: 12, fireInterval: 0.35, pellets: 1,
-    spread: 0.03, bulletSpeed: 600, range: 380, automatic: false, pickupAmmo: 24,
+    spread: 0.03, bulletSpeed: 11, range: 6.5, automatic: false, pickupAmmo: 24,
   },
   uzi: {
-    id: 'uzi', name: 'UZI', damage: 7, fireInterval: 0.09, pellets: 1,
-    spread: 0.09, bulletSpeed: 620, range: 340, automatic: true, pickupAmmo: 60,
+    id: 'uzi', name: 'MACHINE GUN', damage: 7, fireInterval: 0.09, pellets: 1,
+    spread: 0.09, bulletSpeed: 11.5, range: 6, automatic: true, pickupAmmo: 60,
   },
   shotgun: {
     id: 'shotgun', name: 'SHOTGUN', damage: 9, fireInterval: 0.8, pellets: 6,
-    spread: 0.28, bulletSpeed: 540, range: 220, automatic: false, pickupAmmo: 12,
+    spread: 0.28, bulletSpeed: 10, range: 4, automatic: false, pickupAmmo: 12,
   },
 };
 
@@ -43,23 +41,20 @@ let nextId = 1;
 export class Bullet {
   readonly id = nextId++;
   pos: Vec2;
+  z: number;
   vel: Vec2;
-  /** remaining travel distance */
   remaining: number;
   damage: number;
-  /** entity that fired it (so you can't shoot yourself / your car) */
-  ownerId: number;
 
-  constructor(pos: Vec2, angle: number, def: WeaponDef, ownerId: number) {
+  constructor(pos: Vec2, z: number, angle: number, def: WeaponDef) {
     this.pos = { ...pos };
+    this.z = z;
     this.vel = { x: Math.cos(angle) * def.bulletSpeed, y: Math.sin(angle) * def.bulletSpeed };
     this.remaining = def.range;
     this.damage = def.damage;
-    this.ownerId = ownerId;
   }
 }
 
-/** Player's weapon inventory: which weapons are held and with how much ammo. */
 export class Inventory {
   ammo = new Map<WeaponId, number>([['fists', Infinity]]);
   current: WeaponId = 'fists';
@@ -82,7 +77,6 @@ export class Inventory {
     return this.ammo.get(this.current) ?? 0;
   }
 
-  /** Cycle to next/previous held weapon. */
   cycle(step: 1 | -1): void {
     const held = WEAPON_ORDER.filter((w) => this.has(w));
     const i = held.indexOf(this.current);
@@ -93,10 +87,6 @@ export class Inventory {
     this.cooldown = Math.max(0, this.cooldown - dt);
   }
 
-  /**
-   * Attempt to fire. Returns true if a shot happened (caller spawns bullets).
-   * Consumes ammo and starts the cooldown. Falls back to fists at 0 ammo.
-   */
   tryFire(): boolean {
     if (this.cooldown > 0) return false;
     const ammo = this.ammo.get(this.current) ?? 0;

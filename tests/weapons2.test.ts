@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Inventory, WEAPONS } from '../src/sim/weapons';
+import { Inventory, WEAPONS } from '../src/game2/weapons2';
 
 describe('Inventory', () => {
   it('starts with fists and infinite ammo', () => {

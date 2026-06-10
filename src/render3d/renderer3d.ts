@@ -20,6 +20,8 @@ export interface RenderEntity {
   angle: number; // heading, 0 = +x
   /** extra multiplier on the natural sprite size */
   scale?: number;
+  /** colour multiplier, e.g. 0x333333 to darken wrecks */
+  tint?: number;
 }
 
 export interface FxSpawn {
@@ -50,7 +52,7 @@ export class CityRenderer {
   private mount: HTMLElement;
   private spriteTex = new Map<string, THREE.Texture>();
   private fxTex = new Map<string, THREE.Texture>();
-  private entityMeshes = new Map<string, { mesh: THREE.Mesh; sprite: number; remap?: number }>();
+  private entityMeshes = new Map<string, { mesh: THREE.Mesh; sprite: number; remap?: number; tint?: number }>();
   private effects: Effect[] = [];
   private decals: THREE.Mesh[] = [];
   private eye = EYE_FOOT;
@@ -147,7 +149,7 @@ export class CityRenderer {
     for (const e of entities) {
       seen.add(e.key);
       let rec = this.entityMeshes.get(e.key);
-      if (rec && (rec.sprite !== e.sprite || rec.remap !== e.remapPhys)) {
+      if (rec && (rec.sprite !== e.sprite || rec.remap !== e.remapPhys || rec.tint !== e.tint)) {
         this.scene.remove(rec.mesh);
         disposeMesh(rec.mesh);
         rec = undefined;
@@ -158,9 +160,10 @@ export class CityRenderer {
         const entry = this.sty.sprites[e.sprite];
         const geo = new THREE.PlaneGeometry(entry.w / 64, entry.h / 64);
         const mat = new THREE.MeshBasicMaterial({ map: tex, alphaTest: 0.4, side: THREE.DoubleSide });
+        if (e.tint !== undefined) mat.color.set(e.tint);
         const mesh = new THREE.Mesh(geo, mat);
         this.scene.add(mesh);
-        rec = { mesh, sprite: e.sprite, remap: e.remapPhys };
+        rec = { mesh, sprite: e.sprite, remap: e.remapPhys, tint: e.tint };
         this.entityMeshes.set(e.key, rec);
       }
       rec.mesh.position.set(e.x, -e.y, e.z);

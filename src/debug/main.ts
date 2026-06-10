@@ -49,16 +49,55 @@ async function main(): Promise<void> {
     }
   }
 
-  // --- ped sprites (start after car sprites)
+  // --- ped sprites (start after car sprites), indexed, 3x zoom
   {
     const c = document.getElementById('peds') as HTMLCanvasElement;
-    c.width = 10 * 80;
-    c.height = 4 * 80;
+    const COLS = 16;
+    const CELL = 80;
+    c.width = COLS * CELL;
+    c.height = 8 * CELL;
     const ctx = c.getContext('2d')!;
-    const base = sty.spriteBase.car;
-    for (let i = 0; i < 40 && base + i < sty.sprites.length; i++) {
+    ctx.imageSmoothingEnabled = false;
+    const base = sty.spriteBase.car; // cumulative: ped base = car count
+    for (let i = 0; i < COLS * 8 && base + i < sty.sprites.length; i++) {
       const s = sty.spriteRGBA(base + i);
-      putRGBA(ctx, s.data, s.w, s.h, (i % 10) * 80, Math.floor(i / 10) * 80);
+      const tmp = document.createElement('canvas');
+      tmp.width = s.w;
+      tmp.height = s.h;
+      putRGBA(tmp.getContext('2d')!, s.data, s.w, s.h, 0, 0);
+      const x = (i % COLS) * CELL;
+      const y = Math.floor(i / COLS) * CELL;
+      ctx.drawImage(tmp, x, y + 12, s.w * 2.2, s.h * 2.2);
+      ctx.fillStyle = '#0f0';
+      ctx.font = '10px monospace';
+      ctx.fillText(String(i), x, y + 9);
+    }
+  }
+
+  // --- code obj sprites (pickups etc.), indexed
+  {
+    const c = document.createElement('canvas');
+    c.id = 'objs';
+    document.body.appendChild(c);
+    const COLS = 16;
+    const CELL = 80;
+    c.width = COLS * CELL;
+    c.height = 6 * CELL;
+    const ctx = c.getContext('2d')!;
+    ctx.imageSmoothingEnabled = false;
+    const base = sty.spriteBase.car + sty.spriteBase.ped;
+    for (let i = 0; i < COLS * 6 && base + i < sty.sprites.length; i++) {
+      const s = sty.spriteRGBA(base + i);
+      const tmp = document.createElement('canvas');
+      tmp.width = s.w;
+      tmp.height = s.h;
+      putRGBA(tmp.getContext('2d')!, s.data, s.w, s.h, 0, 0);
+      const x = (i % COLS) * CELL;
+      const y = Math.floor(i / COLS) * CELL;
+      ctx.drawImage(tmp, x, y + 12, s.w * 1.6, s.h * 1.6);
+      ctx.fillStyle = '#0f0';
+      ctx.font = '10px monospace';
+      ctx.fillText(String(i), x, y + 9);
     }
   }
 

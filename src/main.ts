@@ -1,12 +1,15 @@
 import { AudioManager } from './audio/audio';
 import { Input } from './core/input';
-import { Renderer } from './render/renderer';
-import { PlayerInput } from './sim/player';
-import { World } from './sim/world';
-import { WEAPONS } from './sim/weapons';
+import { CityMap } from './game2/citymap';
+import { Pickup, PlayerInput, World2 } from './game2/world2';
+import { parseGmp } from './gta2/gmp';
+import { parseSty, Sty } from './gta2/sty';
+import { CityRenderer, FxSpawn, RenderEntity } from './render3d/renderer3d';
+import { GameEvent } from './sim/types';
 
 const FIXED_DT = 1 / 60;
 const MAX_FRAME = 0.1;
+const PX = 64; // audio tuning is in GTA2 pixels; sim runs in blocks
 
 const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
 
@@ -22,12 +25,29 @@ const audio = new AudioManager();
 const input = new Input();
 input.attach();
 
-let world: World | null = null;
-let renderer: Renderer | null = null;
+let world: World2 | null = null;
+let renderer: CityRenderer | null = null;
+let sty: Sty | null = null;
 let paused = true;
+let starting = false;
 let accumulator = 0;
 let respawnTimer = 0;
 let msgTimer = 0;
+let lastArea: string | null = null;
+let rafId = 0;
+let lastT = 0;
+
+// Sprite numbering within the style file (bases are cumulative counts).
+let PED_SPRITE_BASE = 0;
+let OBJ_SPRITE_BASE = 0;
+const PED_WALK_FRAMES = 8;
+const PED_CORPSE_FRAME = 80;
+const PICKUP_SPRITES: Record<Pickup['kind'], number> = {
+  pistol: 18,
+  uzi: 28,
+  shotgun: 35,
+  health: 10,
+};
 
 function showMsg(text: string, seconds = 2.5): void {
   msgEl.textContent = text;
@@ -35,10 +55,9 @@ function showMsg(text: string, seconds = 2.5): void {
   msgTimer = seconds;
 }
 
-function updateHud(w: World): void {
+function updateHud(w: World2): void {
   $('hud-health').textContent = String(Math.max(0, Math.ceil(w.player.health)));
-  const def = WEAPONS[w.player.inventory.current];
-  $('hud-weapon').textContent = w.player.car ? w.player.car.type.id.toUpperCase() : def.name;
+  $('hud-weapon').textContent = w.player.car ? 'DRIVING' : w.player.inventory.currentDef().name;
   const ammo = w.player.inventory.currentAmmo();
   $('hud-ammo').textContent = !w.player.car && Number.isFinite(ammo) ? `× ${ammo}` : '';
   $('hud-score').textContent = String(w.player.score);
@@ -52,24 +71,55 @@ function openMenu(): void {
 }
 
 function closeMenuAndPlay(): void {
+  if (starting) return;
   audio.init();
   audio.uiClick();
+  if (!world) {
+    void startGame();
+    return;
+  }
   menuEl.classList.add('hidden');
   hudEl.classList.add('visible');
   paused = false;
-  if (!world) void startGame();
 }
 
 async function startGame(): Promise<void> {
-  world = new World();
-  (window as unknown as { __world: World }).__world = world; // debug/test hook
-  renderer = await Renderer.create(world, $('game'));
-  renderer.app.ticker.add((ticker) => frame(ticker.deltaMS / 1000, ticker));
-  showMsg('Steal a car with ENTER. Stay alive.', 4);
+  starting = true;
+  btnStart.textContent = 'LOADING…';
+  try {
+    const [gmpBuf, styBuf] = await Promise.all([
+      fetch('gamedata/wil.gmp').then((r) => {
+        if (!r.ok) throw new Error('wil.gmp missing — put GTA2 data files in gamedata/');
+        return r.arrayBuffer();
+      }),
+      fetch('gamedata/wil.sty').then((r) => {
+        if (!r.ok) throw new Error('wil.sty missing — put GTA2 data files in gamedata/');
+        return r.arrayBuffer();
+      }),
+    ]);
+    sty = parseSty(styBuf);
+    PED_SPRITE_BASE = sty.spriteBase.car;
+    OBJ_SPRITE_BASE = sty.spriteBase.car + sty.spriteBase.ped;
+    const map = new CityMap(parseGmp(gmpBuf));
+    world = new World2(map, sty);
+    (window as unknown as { __world: World2 }).__world = world; // debug/test hook
+    renderer = CityRenderer.create($('game'), map.gmp, sty);
+
+    menuEl.classList.add('hidden');
+    hudEl.classList.add('visible');
+    paused = false;
+    lastT = performance.now();
+    rafId = requestAnimationFrame(tick);
+    showMsg('Welcome to Downtown. ENTER steals a car.', 4);
+  } catch (e) {
+    btnStart.textContent = 'PLAY';
+    showMsg(e instanceof Error ? e.message : String(e), 6);
+    throw e;
+  } finally {
+    starting = false;
+  }
 }
 
-// Edge-triggered actions are latched here until a sim step consumes them —
-// frames shorter than FIXED_DT run zero sim steps and must not eat presses.
 const pending = { enterExit: false, nextWeapon: false, prevWeapon: false };
 
 function readInput(): PlayerInput {
@@ -86,16 +136,95 @@ function readInput(): PlayerInput {
   };
 }
 
-function frame(rawDt: number, ticker: import('pixi.js').Ticker): void {
+function entities(w: World2): RenderEntity[] {
+  const out: RenderEntity[] = [];
+  const s = sty!;
+  for (const car of w.cars) {
+    out.push({
+      key: `car:${car.id}`,
+      sprite: car.info.spriteIdx,
+      remapPhys: car.remap >= 0 ? s.carRemapPalette(car.remap) : undefined,
+      tint: car.exploded ? 0x3a3a3a : undefined,
+      x: car.pos.x, y: car.pos.y, z: car.z + 0.05,
+      angle: car.heading,
+    });
+  }
+  for (const ped of w.peds) {
+    const frame = ped.dead
+      ? PED_CORPSE_FRAME
+      : Math.floor(ped.animTime * 10) % PED_WALK_FRAMES;
+    out.push({
+      key: `ped:${ped.id}`,
+      sprite: PED_SPRITE_BASE + frame,
+      remapPhys: ped.remap >= 0 ? s.pedRemapPalette(ped.remap) : undefined,
+      x: ped.pos.x, y: ped.pos.y, z: ped.z + (ped.dead ? 0.02 : 0.03),
+      angle: ped.heading,
+    });
+  }
+  const p = w.player;
+  if (!p.car && !p.dead) {
+    const frame = p.moving ? Math.floor(p.animTime * 10) % PED_WALK_FRAMES : 0;
+    out.push({
+      key: 'player',
+      sprite: PED_SPRITE_BASE + frame,
+      x: p.pos.x, y: p.pos.y, z: p.z + 0.035,
+      angle: p.heading,
+    });
+  }
+  w.pickups.forEach((pk, i) => {
+    if (pk.respawnIn > 0) return;
+    out.push({
+      key: `pickup:${i}`,
+      sprite: OBJ_SPRITE_BASE + PICKUP_SPRITES[pk.kind],
+      x: pk.pos.x, y: pk.pos.y, z: pk.z + 0.04,
+      angle: w.time * 1.5,
+      scale: 0.9,
+    });
+  });
+  return out;
+}
+
+function fxFromEvents(events: GameEvent[], w: World2): FxSpawn[] {
+  const out: FxSpawn[] = [];
+  const z = (x: number, y: number): number => (w.map.groundZ(x, y, w.player.z + 2) ?? w.player.z) + 0.05;
+  for (const e of events) {
+    switch (e.type) {
+      case 'shot': {
+        if (e.weapon === 'fists') break;
+        const h = w.player.heading;
+        const x = e.pos.x + Math.cos(h) * 0.25;
+        const y = e.pos.y + Math.sin(h) * 0.25;
+        out.push({ kind: 'muzzle', x, y, z: w.player.z + 0.5 });
+        break;
+      }
+      case 'hit':
+        out.push({ kind: 'spark', x: e.pos.x, y: e.pos.y, z: z(e.pos.x, e.pos.y) + 0.3 });
+        break;
+      case 'ped_killed':
+        out.push({ kind: 'blood', x: e.pos.x, y: e.pos.y, z: z(e.pos.x, e.pos.y) });
+        break;
+      case 'car_crash':
+        if (e.speed > 2.2) out.push({ kind: 'smoke', x: e.pos.x, y: e.pos.y, z: z(e.pos.x, e.pos.y) + 0.2 });
+        break;
+      case 'explosion':
+        out.push({ kind: 'explosion', x: e.pos.x, y: e.pos.y, z: z(e.pos.x, e.pos.y) + 0.2 });
+        break;
+    }
+  }
+  return out;
+}
+
+function tick(now: number): void {
+  rafId = requestAnimationFrame(tick);
   if (!world || !renderer) return;
-  const dt = Math.min(MAX_FRAME, rawDt);
+  const dt = Math.min(MAX_FRAME, (now - lastT) / 1000);
+  lastT = now;
 
   if (!paused) {
     const pin = readInput();
     accumulator += dt;
     let first = true;
     while (accumulator >= FIXED_DT) {
-      // Edge-triggered actions only apply on the first sim step of a frame.
       world.update(FIXED_DT, first ? pin : { ...pin, enterExit: false, nextWeapon: false, prevWeapon: false });
       accumulator -= FIXED_DT;
       if (first) {
@@ -107,8 +236,15 @@ function frame(rawDt: number, ticker: import('pixi.js').Ticker): void {
     }
 
     const events = world.drainEvents();
-    renderer.handleEvents(events, world);
-    audio.handleEvents(events, world.player.pos);
+    for (const fx of fxFromEvents(events, world)) renderer.spawnFx(fx);
+    audio.handleEvents(
+      events.map((e) => {
+        const scaled = { ...e, pos: { x: e.pos.x * PX, y: e.pos.y * PX } };
+        if (scaled.type === 'car_crash') scaled.speed = e.type === 'car_crash' ? e.speed * PX : 0;
+        return scaled;
+      }),
+      { x: world.player.pos.x * PX, y: world.player.pos.y * PX },
+    );
     for (const e of events) {
       if (e.type === 'player_died') {
         showMsg('WASTED', 3);
@@ -120,10 +256,24 @@ function frame(rawDt: number, ticker: import('pixi.js').Ticker): void {
       if (respawnTimer <= 0) respawnPlayer();
     }
 
+    // bullet tracers
+    for (const b of world.bullets) {
+      renderer.spawnFx({ kind: 'spark', x: b.pos.x, y: b.pos.y, z: b.z });
+    }
+
     const car = world.player.car;
-    audio.setEngine(!!car && !world.player.dead, car ? Math.min(1, car.speed() / car.type.maxSpeed) : 0);
+    audio.setEngine(!!car && !world.player.dead, car ? Math.min(1, car.speed() / car.handling.maxSpeed) : 0);
     audio.update(dt);
     updateHud(world);
+
+    // GTA2-style district name on entering a new navigation zone. The map
+    // stores internal codes (m01, B24...) for some zones — only show names
+    // that read like words (the real display strings live in e.gxt).
+    const area = world.map.areaName(world.player.pos.x, world.player.pos.y);
+    if (area && area !== lastArea) {
+      lastArea = area;
+      if (!/\d/.test(area) && area.length > 3) showMsg(area.toUpperCase(), 2.5);
+    }
   } else {
     audio.setEngine(false, 0);
   }
@@ -133,14 +283,22 @@ function frame(rawDt: number, ticker: import('pixi.js').Ticker): void {
     if (msgTimer <= 0) msgEl.style.opacity = '0';
   }
 
-  renderer.update(dt, world, ticker);
+  renderer.syncEntities(entities(world));
+  const p = world.player;
+  renderer.update(dt, {
+    x: p.pos.x, y: p.pos.y, z: p.z,
+    speed: p.car ? p.car.speed() : 0,
+    driving: !!p.car,
+  });
   input.endFrame();
 }
 
 function respawnPlayer(): void {
   if (!world) return;
   const p = world.player;
-  p.pos = { ...world.map.playerSpawn };
+  const spawn = world.map.playerSpawn();
+  p.pos = { x: spawn.x, y: spawn.y };
+  p.z = spawn.z;
   p.health = 100;
   p.dead = false;
   p.car = null;
@@ -148,8 +306,6 @@ function respawnPlayer(): void {
   p.inventory.ammo.set('fists', Infinity);
   p.inventory.current = 'fists';
 }
-
-// ----------------------------------------------------------------- menu UI
 
 btnStart.addEventListener('click', closeMenuAndPlay);
 btnControls.addEventListener('click', () => {
@@ -166,4 +322,5 @@ input.onEscape = () => {
   if (!paused) openMenu();
 };
 
+void rafId;
 openMenu();
