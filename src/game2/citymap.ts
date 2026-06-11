@@ -18,9 +18,10 @@ export class CityMap {
   constructor(readonly gmp: GmpMap) {}
 
   /**
-   * Walking/driving surface height at (x, y) for an entity whose feet are
-   * near zHint: the lid of the highest block whose top is at most a small
-   * step above zHint. Returns null over void (no lid below).
+   * Walking/driving surface height at (x, y): the highest lid surface that
+   * is at or below zHint (+ small epsilon). Surfaces above zHint — bridge
+   * decks, elevated roads — are ignored, so entities can pass underneath.
+   * Returns null over void (no surface at or below).
    */
   groundZ(x: number, y: number, zHint: number): number | null {
     const bx = Math.floor(x);
@@ -28,14 +29,15 @@ export class CityMap {
     if (bx < 0 || by < 0 || bx >= MAP_SIZE || by >= MAP_SIZE) return null;
     const fx = x - bx;
     const fy = y - by;
-    const maxLevel = Math.min(7, Math.floor(zHint + 0.51));
+    const maxLevel = Math.min(7, Math.floor(zHint + 0.05));
     for (let lvl = maxLevel; lvl >= 0; lvl--) {
       const b = this.gmp.getBlock(bx, by, lvl);
       if (!b) continue;
       if (decodeLid(b.lid).tile === 0) continue;
       const slope = slopeType(b);
       if (slope === 63) continue; // marker: real slope is the block above
-      return lvl + slopeHeightAt(slope, fx, fy);
+      const surface = lvl + slopeHeightAt(slope, fx, fy);
+      if (surface <= zHint + 0.05) return surface;
     }
     return null;
   }

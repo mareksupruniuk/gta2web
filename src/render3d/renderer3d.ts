@@ -22,12 +22,17 @@ export interface RenderEntity {
   scale?: number;
   /** colour multiplier, e.g. 0x333333 to darken wrecks */
   tint?: number;
-  /**
-   * canonical art orientation correction in radians (STY car art noses point
-   * image-top, ped art faces image-bottom → peds need Math.PI)
-   */
+  /** extra art-orientation correction in radians (rarely needed) */
   angleOffset?: number;
+  /** ground slope gradient at the entity (sim coords) for hill tilting */
+  dzdx?: number;
+  dzdy?: number;
 }
+
+const Z_UP = new THREE.Vector3(0, 0, 1);
+const NORMAL = new THREE.Vector3();
+const QA = new THREE.Quaternion();
+const QB = new THREE.Quaternion();
 
 export interface FxSpawn {
   kind: 'muzzle' | 'blood' | 'explosion' | 'smoke' | 'spark';
@@ -174,9 +179,18 @@ export class CityRenderer {
         this.entityMeshes.set(e.key, rec);
       }
       rec.mesh.position.set(e.x, -e.y, e.z);
-      // Sprite art noses point image-top; map heading 0 = +x (east). Verified
-      // against close-up screenshots of car sprites at forced headings.
-      rec.mesh.rotation.z = -(e.angle + (e.angleOffset ?? 0)) - Math.PI / 2;
+      // GTA2 sprite art faces image-bottom (player-confirmed: cars drove
+      // visually backwards with the image-top assumption).
+      const phi = -(e.angle + (e.angleOffset ?? 0)) + Math.PI / 2;
+      if (e.dzdx !== undefined || e.dzdy !== undefined) {
+        // Tilt the quad to the ground slope so cars/peds don't sink into hills.
+        NORMAL.set(-(e.dzdx ?? 0), e.dzdy ?? 0, 1).normalize();
+        QA.setFromUnitVectors(Z_UP, NORMAL);
+        QB.setFromAxisAngle(Z_UP, phi);
+        rec.mesh.quaternion.copy(QA).multiply(QB);
+      } else {
+        rec.mesh.rotation.set(0, 0, phi);
+      }
       const s = e.scale ?? 1;
       rec.mesh.scale.set(s, s, 1);
     }

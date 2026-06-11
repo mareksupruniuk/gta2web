@@ -41,7 +41,8 @@ let lastT = 0;
 let PED_SPRITE_BASE = 0;
 let OBJ_SPRITE_BASE = 0;
 const PED_WALK_FRAMES = 8;
-const PED_CORPSE_FRAME = 80;
+const PED_ARMED_BASE = 8; // aiming/armed walk cycle
+const PED_CORPSE_FRAME = 117; // prone pose
 const PICKUP_SPRITES: Record<Pickup['kind'], number> = {
   pistol: 18,
   uzi: 28,
@@ -87,13 +88,15 @@ async function startGame(): Promise<void> {
   starting = true;
   btnStart.textContent = 'LOADING…';
   try {
+    // ?map=ste / ?map=bil loads the other districts (default: Downtown).
+    const district = new URLSearchParams(location.search).get('map') ?? 'wil';
     const [gmpBuf, styBuf] = await Promise.all([
-      fetch('gamedata/wil.gmp').then((r) => {
-        if (!r.ok) throw new Error('wil.gmp missing — put GTA2 data files in gamedata/');
+      fetch(`gamedata/${district}.gmp`).then((r) => {
+        if (!r.ok) throw new Error(`${district}.gmp missing — put GTA2 data files in gamedata/`);
         return r.arrayBuffer();
       }),
-      fetch('gamedata/wil.sty').then((r) => {
-        if (!r.ok) throw new Error('wil.sty missing — put GTA2 data files in gamedata/');
+      fetch(`gamedata/${district}.sty`).then((r) => {
+        if (!r.ok) throw new Error(`${district}.sty missing — put GTA2 data files in gamedata/`);
         return r.arrayBuffer();
       }),
     ]);
@@ -102,7 +105,7 @@ async function startGame(): Promise<void> {
     OBJ_SPRITE_BASE = sty.spriteBase.car + sty.spriteBase.ped;
     const map = new CityMap(parseGmp(gmpBuf));
     // Spawn outside the Jesus Saves church in Avalon (north-west Downtown).
-    world = new World2(map, sty, 1999, { x: 9.5, y: 14.5 });
+    world = new World2(map, sty, 1999, district === 'wil' ? { x: 9.5, y: 14.5 } : undefined);
     (window as unknown as { __world: World2 }).__world = world; // debug/test hook
     renderer = CityRenderer.create($('game'), map.gmp, sty);
     (window as unknown as { __renderer: CityRenderer }).__renderer = renderer;
@@ -122,19 +125,31 @@ async function startGame(): Promise<void> {
   }
 }
 
-const pending = { enterExit: false, nextWeapon: false, prevWeapon: false };
+const pending = { enterExit: false, nextWeapon: false, prevWeapon: false, jump: false };
 
 function readInput(): PlayerInput {
   pending.enterExit ||= input.wasPressed('Enter', 'KeyF');
   pending.nextWeapon ||= input.wasPressed('KeyE');
   pending.prevWeapon ||= input.wasPressed('KeyQ');
+  pending.jump ||= input.wasPressed('ShiftLeft', 'ShiftRight', 'KeyX');
   return {
     moveX: input.moveX(),
     moveY: input.moveY(),
     attack: input.isDown('Space') || input.wasPressed('Space'),
+    jump: pending.jump,
     enterExit: pending.enterExit,
     nextWeapon: pending.nextWeapon,
     prevWeapon: pending.prevWeapon,
+  };
+}
+
+/** Ground slope gradient at (x, y), for tilting sprites on hills. */
+function gradAt(w: World2, x: number, y: number, z: number): { dzdx: number; dzdy: number } {
+  const e = 0.2;
+  const g = (xx: number, yy: number): number => w.map.groundZ(xx, yy, z + 0.6) ?? z;
+  return {
+    dzdx: (g(x + e, y) - g(x - e, y)) / (2 * e),
+    dzdy: (g(x, y + e) - g(x, y - e)) / (2 * e),
   };
 }
 
@@ -149,6 +164,7 @@ function entities(w: World2): RenderEntity[] {
       tint: car.exploded ? 0x3a3a3a : undefined,
       x: car.pos.x, y: car.pos.y, z: car.z + 0.05,
       angle: car.heading,
+      ...gradAt(w, car.pos.x, car.pos.y, car.z),
     });
   }
   for (const ped of w.peds) {
@@ -161,18 +177,21 @@ function entities(w: World2): RenderEntity[] {
       remapPhys: ped.remap >= 0 ? s.pedRemapPalette(ped.remap) : undefined,
       x: ped.pos.x, y: ped.pos.y, z: ped.z + (ped.dead ? 0.02 : 0.03),
       angle: ped.heading,
-      angleOffset: Math.PI, // ped art faces image-bottom
+      ...(ped.dead ? {} : gradAt(w, ped.pos.x, ped.pos.y, ped.z)),
     });
   }
   const p = w.player;
   if (!p.car && !p.dead) {
-    const frame = p.moving ? Math.floor(p.animTime * 10) % PED_WALK_FRAMES : 0;
+    // Armed stance (aiming cycle) when holding a weapon, plain walk otherwise.
+    const armed = p.inventory.current !== 'fists';
+    const base = armed ? PED_ARMED_BASE : 0;
+    const frame = p.moving ? base + (Math.floor(p.animTime * 10) % PED_WALK_FRAMES) : base;
     out.push({
       key: 'player',
       sprite: PED_SPRITE_BASE + frame,
       x: p.pos.x, y: p.pos.y, z: p.z + 0.035,
       angle: p.heading,
-      angleOffset: Math.PI, // ped art faces image-bottom
+      ...gradAt(w, p.pos.x, p.pos.y, p.z),
     });
   }
   w.pickups.forEach((pk, i) => {
@@ -229,12 +248,13 @@ function tick(now: number): void {
     accumulator += dt;
     let first = true;
     while (accumulator >= FIXED_DT) {
-      world.update(FIXED_DT, first ? pin : { ...pin, enterExit: false, nextWeapon: false, prevWeapon: false });
+      world.update(FIXED_DT, first ? pin : { ...pin, enterExit: false, nextWeapon: false, prevWeapon: false, jump: false });
       accumulator -= FIXED_DT;
       if (first) {
         pending.enterExit = false;
         pending.nextWeapon = false;
         pending.prevWeapon = false;
+        pending.jump = false;
       }
       first = false;
     }

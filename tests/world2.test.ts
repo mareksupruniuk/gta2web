@@ -15,7 +15,7 @@ function load(name: string): ArrayBuffer {
 }
 
 const NEUTRAL: PlayerInput = {
-  moveX: 0, moveY: 0, attack: false, enterExit: false, nextWeapon: false, prevWeapon: false,
+  moveX: 0, moveY: 0, attack: false, jump: false, enterExit: false, nextWeapon: false, prevWeapon: false,
 };
 
 describe.skipIf(!haveData)('World2 on Downtown', () => {

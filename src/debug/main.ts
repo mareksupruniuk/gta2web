@@ -29,9 +29,9 @@ async function main(): Promise<void> {
   {
     const c = document.getElementById('tiles') as HTMLCanvasElement;
     c.width = 16 * TILE_SIZE;
-    c.height = 16 * TILE_SIZE;
+    c.height = 62 * TILE_SIZE;
     const ctx = c.getContext('2d')!;
-    for (let t = 0; t < 256 && t < sty.tileCount; t++) {
+    for (let t = 0; t < sty.tileCount; t++) {
       putRGBA(ctx, sty.tileRGBA(t), TILE_SIZE, TILE_SIZE, (t % 16) * TILE_SIZE, Math.floor(t / 16) * TILE_SIZE);
     }
   }

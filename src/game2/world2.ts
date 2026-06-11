@@ -26,6 +26,7 @@ export interface PlayerInput {
   moveX: number; // steer / rotate
   moveY: number; // -1 = forward/up
   attack: boolean;
+  jump: boolean; // edge-triggered
   enterExit: boolean;
   nextWeapon: boolean;
   prevWeapon: boolean;
@@ -41,6 +42,7 @@ export interface Pickup {
 export class Player2 {
   pos: Vec2;
   z: number;
+  vz = 0; // vertical velocity (jumping / falling)
   heading = -Math.PI / 2;
   health = 100;
   inventory = new Inventory();
@@ -272,9 +274,22 @@ export class World2 {
       const ny = p.pos.y + Math.sin(p.heading) * speed * dt;
       if (this.map.canMoveBody(p.pos.x, p.pos.y, nx, p.pos.y, p.z, PLAYER_RADIUS, 0.6)) p.pos.x = nx;
       if (this.map.canMoveBody(p.pos.x, p.pos.y, p.pos.x, ny, p.z, PLAYER_RADIUS, 0.6)) p.pos.y = ny;
-      const g = this.map.groundZ(p.pos.x, p.pos.y, p.z + 0.55);
-      if (g !== null) p.z = g < p.z - 0.05 ? Math.max(g, p.z - 4 * dt) : g;
     }
+
+    // Vertical: jump, gravity, ground snap (slopes/steps).
+    const ground = this.map.groundZ(p.pos.x, p.pos.y, p.z + 0.55) ?? p.z;
+    if (input.jump && p.vz === 0 && p.z - ground <= 0.05) p.vz = 4.3;
+    if (p.vz !== 0 || p.z > ground + 0.01) {
+      p.vz -= 9.5 * dt;
+      p.z += p.vz * dt;
+      if (p.z <= ground) {
+        p.z = ground;
+        p.vz = 0;
+      }
+    } else {
+      p.z = ground;
+    }
+
     // Cars are solid: don't let the player stand inside one.
     for (const car of this.cars) {
       if (Math.abs(car.z - p.z) < 0.8) pushOutOfCar(p.pos, PLAYER_RADIUS, car);

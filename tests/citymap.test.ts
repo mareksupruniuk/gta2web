@@ -58,6 +58,34 @@ describe.skipIf(!haveData)('CityMap on Downtown (wil.gmp)', () => {
     expect(blockedSomewhere).toBe(true);
   });
 
+  it('lets entities pass under bridges: groundZ ignores decks above headroom', () => {
+    // find a column with two stacked walkable surfaces (street + bridge deck)
+    const gmp = map.gmp;
+    let found = 0;
+    for (let y = 2; y < 254 && found < 5; y++) {
+      for (let x = 2; x < 254 && found < 5; x++) {
+        const col = gmp.getColumn(x, y);
+        const lids: number[] = [];
+        for (let i = 0; i < col.blockIds.length; i++) {
+          const b = gmp.blocks[col.blockIds[i]];
+          if (b && (b.lid & 0x3ff) !== 0 && b.slopeByte >> 2 !== 63) lids.push(col.offset + i + 1);
+        }
+        if (lids.length < 2) continue;
+        const low = lids[0];
+        const high = lids[lids.length - 1];
+        if (high - low < 2) continue; // need headroom between street and deck
+        found++;
+        // an entity at street level must see the street, not the deck above
+        const gLow = map.groundZ(x + 0.5, y + 0.5, low + 0.55);
+        expect(gLow).toBe(low);
+        // an entity on the deck sees the deck
+        const gHigh = map.groundZ(x + 0.5, y + 0.5, high + 0.55);
+        expect(gHigh).toBe(high);
+      }
+    }
+    expect(found).toBeGreaterThan(0); // Downtown has bridges/viaducts
+  });
+
   it('has restart zones and navigation areas', () => {
     expect(map.zonesOfType(16).length).toBeGreaterThan(0);
     const s = map.playerSpawn();

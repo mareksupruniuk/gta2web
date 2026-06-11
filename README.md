@@ -35,6 +35,7 @@ npm run dev                   # then open the printed URL
 | ← / → (A/D) | rotate / steer |
 | ↑ / ↓ (W/S) | walk, accelerate / back, brake |
 | SPACE | attack on foot, handbrake in car |
+| SHIFT or X | jump |
 | ENTER or F | enter / exit / carjack |
 | Q / E | switch weapon |
 | ESC | pause menu |

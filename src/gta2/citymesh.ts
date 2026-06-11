@@ -56,7 +56,13 @@ function pushTri(g: GeomArrays, v: [V3, V3, V3], uv: [number, number][], shade: 
   g.indices.push(base, base + 1, base + 2);
 }
 
-/** uv corners [nw, ne, se, sw] for a face, honouring flip + rotation bits. */
+/**
+ * uv corners [nw, ne, se, sw] for a face, honouring rotation + flip bits.
+ * Each rotation step turns the tile 90° clockwise, then flip mirrors the
+ * result left-right. Both the direction and the rotate-then-flip order are
+ * matched against the original game's UV code (gta2_re MapRenderer
+ * sub_46B910: rot1 = (u,v)→(v,64-u), rot1+flip = (u,v)→(v,u)).
+ */
 function faceUV(atlas: TileAtlas, f: Face): [number, number][] {
   const [u0, v0, u1, v1] = atlas.uv(f.tile);
   let c: [number, number][] = [
@@ -65,9 +71,8 @@ function faceUV(atlas: TileAtlas, f: Face): [number, number][] {
     [u1, v1],
     [u0, v1],
   ];
-  if (f.flip) c = [c[1], c[0], c[3], c[2]];
-  // rotation: texture rotated 90° clockwise per step
   for (let r = 0; r < f.rotation; r++) c = [c[3], c[0], c[1], c[2]];
+  if (f.flip) c = [c[1], c[0], c[3], c[2]];
   return c;
 }
 
@@ -122,10 +127,16 @@ export function buildChunkGeometry(
         const slope = slopeType(b);
         const c = slopeCorners(slope);
         const lid = fix(decodeLid(b.lid));
-        const left = fix(decodeSide(b.left));
-        const right = fix(decodeSide(b.right));
-        const top = fix(decodeSide(b.top));
-        const bottom = fix(decodeSide(b.bottom));
+        // "flipping and rotation is not supported on the sides of slopes"
+        const isSlope = slope >= 1 && slope <= 44;
+        const sideFix = (v: number): Face => {
+          const f = fix(decodeSide(v));
+          return isSlope ? { ...f, rotation: 0, flip: false } : f;
+        };
+        const left = sideFix(b.left);
+        const right = sideFix(b.right);
+        const top = sideFix(b.top);
+        const bottom = sideFix(b.bottom);
         const zNW = z + c.nw;
         const zNE = z + c.ne;
         const zSW = z + c.sw;

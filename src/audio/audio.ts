@@ -371,8 +371,9 @@ export class AudioManager {
         this.noiseBurst({ t, dur: 0.13, peak: 0.55 * gain, type: 'lowpass', freq: 3200, freqEnd: 500, q: 0.8 });
         break;
       case 'uzi':
-        // Snappier shot pitched up and trimmed short for high fire rates.
-        if (this.playSample('shot-uzi', 0.4 * gain, { rate: 1.3 + Math.random() * 0.1, maxDur: 0.3 })) return;
+        // Snappier shot pitched well up and trimmed short so the uzi reads
+        // clearly different from the pistol.
+        if (this.playSample('shot-uzi', 0.32 * gain, { rate: 1.55 + Math.random() * 0.15, maxDur: 0.18 })) return;
         if (!this.claimVoice(0.07)) return;
         // Short, snappy.
         this.noiseBurst({ t, dur: 0.06, peak: 0.4 * gain, type: 'lowpass', freq: 2600, freqEnd: 700, q: 0.7 });
