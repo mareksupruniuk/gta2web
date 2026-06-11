@@ -72,6 +72,10 @@ function updateHud(w: World2): void {
   const ammo = w.player.inventory.currentAmmo();
   $('hud-ammo').textContent = !w.player.car && Number.isFinite(ammo) ? `× ${ammo}` : '';
   $('hud-score').textContent = String(w.player.score);
+  const wantedEl = $('wanted');
+  const lvl = w.wanted.level;
+  wantedEl.classList.toggle('visible', lvl > 0);
+  wantedEl.textContent = '👮'.repeat(lvl);
 }
 
 function openMenu(): void {

@@ -65,6 +65,13 @@
       #hud .health { color: #ff4444; }
       #hud .weapon { color: #ffd700; }
       #hud .score { color: #44ff44; }
+      #wanted {
+        position: absolute; top: 12px; right: 16px;
+        font-size: 22px; letter-spacing: 2px;
+        color: #4488ff; text-shadow: 2px 2px 0 #000;
+        z-index: 5; pointer-events: none; display: none;
+      }
+      #wanted.visible { display: block; }
       #msg {
         position: absolute; bottom: 48px; left: 0; right: 0; text-align: center;
         color: #ffd700; font-family: 'Arial Black', Arial, sans-serif; font-size: 22px;
@@ -80,6 +87,7 @@
       <div class="weapon"><span id="hud-weapon">FISTS</span> <span id="hud-ammo"></span></div>
       <div class="score">$ <span id="hud-score">0</span></div>
     </div>
+    <div id="wanted"></div>
     <div id="msg"></div>
     <div id="menu">
       <h1>GTA2WEB</h1>

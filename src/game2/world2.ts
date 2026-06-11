@@ -6,6 +6,7 @@ import { CityMap } from './citymap';
 import { panicNearby, Ped2, PED_RADIUS } from './ped2';
 import { TrafficAI, dirAngle, dirNameFromArrows } from './traffic2';
 import { Bullet, Flame, Inventory, Thrown, WEAPONS } from './weapons2';
+import { HEAT_PER, Wanted } from './wanted';
 
 export const PLAYER_RADIUS = 0.14;
 const WALK_SPEED = 1.8;
@@ -117,7 +118,11 @@ export class World2 {
   beam: { x0: number; y0: number; x1: number; y1: number; z: number } | null = null;
   pickups: Pickup[] = [];
   events: GameEvent[] = [];
+  wanted = new Wanted();
   time = 0;
+  /** cars recently damaged by the player (for crime attribution) */
+  private playerDamaged = new Map<number, number>();
+  private heatCounted = new Set<number>();
   private usableCars: CarInfo[];
   private roadSpawns: { x: number; y: number; z: number }[] = [];
   private pavementSpawns: { x: number; y: number; z: number }[] = [];
@@ -235,6 +240,16 @@ export class World2 {
     this.time += dt;
     this.exitGrace = Math.max(0, this.exitGrace - dt);
     this.beam = null;
+    this.wanted.update(dt);
+    // Destroying a car you recently shot/burned is a crime.
+    for (const car of this.cars) {
+      if (!car.exploded || this.heatCounted.has(car.id)) continue;
+      const t = this.playerDamaged.get(car.id);
+      if (t !== undefined && this.time - t < 6) {
+        this.wanted.add(HEAT_PER.carDestroyed);
+        this.heatCounted.add(car.id);
+      }
+    }
     const player = this.player;
     player.inventory.tick(dt);
 
@@ -389,7 +404,7 @@ export class World2 {
           if (Math.abs(angleDiff(player.heading, a)) < 1.1) {
             ped.applyDamage(def.pedDamage, this.emit, player.pos);
             this.emit({ type: 'hit', pos: { ...ped.pos }, surface: 'ped' });
-            if (ped.dead) player.score += 10;
+            if (ped.dead) { player.score += 10; this.wanted.add(HEAT_PER.pedKilled); }
             return;
           }
         }
@@ -456,12 +471,13 @@ export class World2 {
       const ped = this.peds.find((pd) => !pd.dead && Math.abs(pd.z - p.z) < 1 && dist(pd.pos, { x, y }) < PED_RADIUS + 0.12);
       if (ped) {
         ped.applyDamage(pedDamage, this.emit, p.pos);
-        if (ped.dead) p.score += 10;
+        if (ped.dead) { p.score += 10; this.wanted.add(HEAT_PER.pedKilled); }
         this.emit({ type: 'hit', pos: { x, y }, surface: 'ped' });
         break;
       }
       const car = this.cars.find((c) => !c.exploded && c !== p.car && Math.abs(c.z - p.z) < 1 && c.containsPoint(x, y, 0.05));
       if (car) {
+        this.playerDamaged.set(car.id, this.time);
         car.applyDamage(carDamage * 0.12, this.emit);
         this.emit({ type: 'hit', pos: { x, y }, surface: 'car' });
         break;
@@ -552,7 +568,7 @@ export class World2 {
         if (ped.dead || Math.abs(ped.z - car.z) > 0.8) continue;
         if (car.containsPoint(ped.pos.x, ped.pos.y, PED_RADIUS)) {
           ped.applyDamage(100, this.emit);
-          if (car.driver === 'player') this.player.score += 10;
+          if (car.driver === 'player') { this.player.score += 10; this.wanted.add(HEAT_PER.pedKilled); }
         }
       }
       const p = this.player;
@@ -587,7 +603,7 @@ export class World2 {
           if (dist(ped.pos, b.pos) < PED_RADIUS + 0.07) {
             if (!b.isRocket) {
               ped.applyDamage(b.pedDamage, this.emit, { x: ox, y: oy });
-              if (ped.dead) this.player.score += 10;
+              if (ped.dead) { this.player.score += 10; this.wanted.add(HEAT_PER.pedKilled); }
             }
             this.emit({ type: 'hit', pos: { ...b.pos }, surface: 'ped' });
             alive = false;
@@ -600,6 +616,7 @@ export class World2 {
         for (const car of this.cars) {
           if (car.exploded || car === this.player.car || Math.abs(car.z + 0.5 - b.z) > 0.9) continue;
           if (car.containsPoint(b.pos.x, b.pos.y, 0.05)) {
+            this.playerDamaged.set(car.id, this.time);
             if (!b.isRocket) {
               car.applyDamage(b.carDamage, this.emit);
             }
@@ -685,6 +702,7 @@ export class World2 {
         for (const car of this.cars) {
           if (car.exploded || car === this.player.car) continue;
           if (Math.abs(car.z - f.z) < 1 && car.containsPoint(f.pos.x, f.pos.y, 0.1)) {
+            this.playerDamaged.set(car.id, this.time);
             car.applyDamage(0.8, this.emit);
             burned = true;
             break;
