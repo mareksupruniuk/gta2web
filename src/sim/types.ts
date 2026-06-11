@@ -72,7 +72,8 @@ export type WeaponId = 'fists' | 'pistol' | 'uzi' | 'shotgun';
 /** Events emitted by the simulation, consumed by audio/vfx layers. */
 export type GameEvent =
   | { type: 'shot'; weapon: WeaponId; pos: Vec2 }
-  | { type: 'hit'; pos: Vec2 }
+  | { type: 'hit'; pos: Vec2; surface?: 'ped' | 'car' | 'wall' }
+  | { type: 'car_fire'; pos: Vec2 }
   | { type: 'ped_killed'; pos: Vec2 }
   | { type: 'ped_scream'; pos: Vec2 }
   | { type: 'car_enter'; pos: Vec2 }

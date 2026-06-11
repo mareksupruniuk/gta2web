@@ -239,6 +239,7 @@ export class World2 {
     }
 
     for (const car of this.cars) car.update(dt, this.map, this.emit);
+    this.bailFromBurningCars();
     this.resolveCarCollisions();
     for (const ped of this.peds) {
       ped.update(dt, this.map, this.rng);
@@ -349,8 +350,8 @@ export class World2 {
         if (dist(ped.pos, player.pos) > def.range + PED_RADIUS) continue;
         const a = Math.atan2(ped.pos.y - player.pos.y, ped.pos.x - player.pos.x);
         if (Math.abs(angleDiff(player.heading, a)) < 1.1) {
-          ped.applyDamage(def.damage, this.emit, player.pos);
-          this.emit({ type: 'hit', pos: { ...ped.pos } });
+          ped.applyDamage(def.pedDamage, this.emit, player.pos);
+          this.emit({ type: 'hit', pos: { ...ped.pos }, surface: 'ped' });
           if (ped.dead) player.score += 10;
           return;
         }
@@ -366,6 +367,25 @@ export class World2 {
       this.bullets.push(new Bullet(origin, player.z + 0.5, a, def));
     }
     panicNearby(this.peds, player.pos);
+  }
+
+  /** AI drivers abandon a burning car and flee, like in GTA2. */
+  private bailFromBurningCars(): void {
+    for (const car of this.cars) {
+      if (!car.onFire || car.driver !== 'ai') continue;
+      this.drivers = this.drivers.filter((d) => d.car !== car);
+      car.driver = null;
+      car.controls = { throttle: 0, steer: 0, handbrake: false };
+      const side = car.heading - Math.PI / 2;
+      const out = {
+        x: car.pos.x + Math.cos(side) * (car.width / 2 + PED_RADIUS + 0.1),
+        y: car.pos.y + Math.sin(side) * (car.width / 2 + PED_RADIUS + 0.1),
+      };
+      const remapCount = this.sty.palBase.pedRemap;
+      const ped = new Ped2(out, car.z, remapCount > 0 ? this.rng.int(0, remapCount) : -1);
+      ped.panic(car.pos);
+      this.peds.push(ped);
+    }
   }
 
   private resolveCarCollisions(): void {
@@ -444,16 +464,16 @@ export class World2 {
       let alive = b.remaining > 0;
 
       if (alive && !this.map.canMove(ox, oy, b.pos.x, b.pos.y, b.z, 2)) {
-        this.emit({ type: 'hit', pos: { ...b.pos } });
+        this.emit({ type: 'hit', pos: { ...b.pos }, surface: 'wall' });
         alive = false;
       }
       if (alive) {
         for (const ped of this.peds) {
           if (ped.dead || Math.abs(ped.z + 0.5 - b.z) > 0.9) continue;
           if (dist(ped.pos, b.pos) < PED_RADIUS + 0.07) {
-            ped.applyDamage(b.damage, this.emit, { x: ox, y: oy });
+            ped.applyDamage(b.pedDamage, this.emit, { x: ox, y: oy });
             if (ped.dead) this.player.score += 10;
-            this.emit({ type: 'hit', pos: { ...b.pos } });
+            this.emit({ type: 'hit', pos: { ...b.pos }, surface: 'ped' });
             alive = false;
             break;
           }
@@ -463,8 +483,8 @@ export class World2 {
         for (const car of this.cars) {
           if (car.exploded || car === this.player.car || Math.abs(car.z + 0.5 - b.z) > 0.9) continue;
           if (dist(car.pos, b.pos) < car.length * 0.45) {
-            car.applyDamage(b.damage, this.emit);
-            this.emit({ type: 'hit', pos: { ...b.pos } });
+            car.applyDamage(b.carDamage, this.emit);
+            this.emit({ type: 'hit', pos: { ...b.pos }, surface: 'car' });
             alive = false;
             break;
           }
@@ -503,7 +523,7 @@ export class World2 {
         if (!ped.dead && dist(ped.pos, e.pos) < 1.2) ped.applyDamage(100, this.emit, e.pos);
       }
       for (const car of this.cars) {
-        if (!car.exploded && dist(car.pos, e.pos) < 1.4) car.applyDamage(60, this.emit);
+        if (!car.exploded && dist(car.pos, e.pos) < 1.4) car.applyDamage(60, this.emit, true);
       }
       if (!this.player.dead && dist(this.player.pos, e.pos) < 1.4) {
         this.player.applyDamage(this.player.car ? 35 : 60);

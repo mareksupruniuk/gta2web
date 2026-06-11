@@ -35,10 +35,18 @@ const QA = new THREE.Quaternion();
 const QB = new THREE.Quaternion();
 
 export interface FxSpawn {
-  kind: 'muzzle' | 'blood' | 'explosion' | 'smoke' | 'spark';
+  kind: 'muzzle' | 'blood' | 'bloodspray' | 'explosion' | 'smoke' | 'spark' | 'dust' | 'fire';
   x: number;
   y: number;
   z: number;
+}
+
+export interface TracerInfo {
+  id: number;
+  x: number;
+  y: number;
+  z: number;
+  angle: number;
 }
 
 interface Effect {
@@ -65,6 +73,8 @@ export class CityRenderer {
   private entityMeshes = new Map<string, { mesh: THREE.Mesh; sprite: number; remap?: number; tint?: number }>();
   private effects: Effect[] = [];
   private decals: THREE.Mesh[] = [];
+  private tracerMeshes = new Map<number, THREE.Mesh>();
+  private tracerTex: THREE.Texture | null = null;
   private eye = EYE_FOOT;
   private shake = 0;
   private leadX = 0;
@@ -212,6 +222,21 @@ export class CityRenderer {
     c.width = 64;
     c.height = 64;
     const ctx = c.getContext('2d')!;
+    if (kind === 'blood') {
+      // irregular splatter: overlapping blots, not a soft ball
+      for (let i = 0; i < 11; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const d = Math.random() * 20;
+        const r = i < 4 ? 7 + Math.random() * 6 : 1.5 + Math.random() * 3.5;
+        ctx.fillStyle = `rgba(${120 + Math.random() * 40},12,12,${0.75 + Math.random() * 0.25})`;
+        ctx.beginPath();
+        ctx.arc(32 + Math.cos(a) * d * (i < 4 ? 0.4 : 1), 32 + Math.sin(a) * d * (i < 4 ? 0.4 : 1), r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      tex = new THREE.CanvasTexture(c);
+      this.fxTex.set(kind, tex);
+      return tex;
+    }
     const grad = ctx.createRadialGradient(32, 32, 2, 32, 32, 32);
     switch (kind) {
       case 'muzzle':
@@ -228,6 +253,21 @@ export class CityRenderer {
       case 'smoke':
         grad.addColorStop(0, 'rgba(70,70,70,0.85)');
         grad.addColorStop(1, 'rgba(60,60,60,0)');
+        break;
+      case 'dust':
+        grad.addColorStop(0, 'rgba(170,160,140,0.8)');
+        grad.addColorStop(1, 'rgba(150,140,120,0)');
+        break;
+      case 'fire':
+        grad.addColorStop(0, 'rgba(255,245,200,1)');
+        grad.addColorStop(0.35, 'rgba(255,160,30,0.95)');
+        grad.addColorStop(0.7, 'rgba(230,70,10,0.7)');
+        grad.addColorStop(1, 'rgba(180,30,0,0)');
+        break;
+      case 'bloodspray':
+        grad.addColorStop(0, 'rgba(190,25,25,1)');
+        grad.addColorStop(0.6, 'rgba(150,15,15,0.8)');
+        grad.addColorStop(1, 'rgba(120,10,10,0)');
         break;
       case 'blood':
         grad.addColorStop(0, 'rgba(150,15,15,0.95)');
@@ -271,9 +311,77 @@ export class CityRenderer {
       }
       return;
     }
-    const size = fx.kind === 'muzzle' ? 0.28 : fx.kind === 'spark' ? 0.18 : 0.45;
-    const ttl = fx.kind === 'muzzle' ? 0.06 : fx.kind === 'spark' ? 0.1 : 0.5;
-    this.addEffect(fx, fx.kind, ttl, { size, grow: fx.kind === 'smoke' ? 1.5 : 0.4 });
+    if (fx.kind === 'bloodspray') {
+      // GTA2-style blood spurt: a burst of small droplets + a small stain.
+      for (let i = 0; i < 6; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const sp = 0.4 + Math.random() * 1.2;
+        this.addEffect(fx, 'bloodspray', 0.15 + Math.random() * 0.15, {
+          size: 0.07 + Math.random() * 0.06,
+          vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+        });
+      }
+      if (Math.random() < 0.5) {
+        const mesh = this.flatQuad(fx, 0.2 + Math.random() * 0.15, 'blood', 0.002);
+        mesh.rotation.z = Math.random() * Math.PI * 2;
+        this.scene.add(mesh);
+        this.decals.push(mesh);
+      }
+      return;
+    }
+    if (fx.kind === 'fire') {
+      this.addEffect(fx, 'fire', 0.3 + Math.random() * 0.2, {
+        size: 0.25 + Math.random() * 0.15, grow: 1.2,
+        vx: (Math.random() - 0.5) * 0.3, vy: (Math.random() - 0.5) * 0.3,
+      });
+      return;
+    }
+    const size = fx.kind === 'muzzle' ? 0.28 : fx.kind === 'spark' ? 0.14 : fx.kind === 'dust' ? 0.22 : 0.45;
+    const ttl = fx.kind === 'muzzle' ? 0.06 : fx.kind === 'spark' ? 0.12 : fx.kind === 'dust' ? 0.3 : 0.5;
+    this.addEffect(fx, fx.kind, ttl, { size, grow: fx.kind === 'smoke' ? 1.5 : fx.kind === 'dust' ? 1.8 : 0.4 });
+  }
+
+  /** Sync visible bullet tracers (thin bright streaks) to the sim's bullets. */
+  syncTracers(tracers: TracerInfo[]): void {
+    if (!this.tracerTex) {
+      const c = document.createElement('canvas');
+      c.width = 8;
+      c.height = 32;
+      const ctx = c.getContext('2d')!;
+      // bright head at canvas bottom = the end that leads (art faces
+      // image-bottom, like all sprites here); the tail fades out behind
+      const grad = ctx.createLinearGradient(0, 0, 0, 32);
+      grad.addColorStop(0, 'rgba(255,180,60,0)');
+      grad.addColorStop(0.5, 'rgba(255,230,150,0.9)');
+      grad.addColorStop(1, 'rgba(255,255,240,1)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, 8, 32);
+      this.tracerTex = new THREE.CanvasTexture(c);
+    }
+    const seen = new Set<number>();
+    for (const t of tracers) {
+      seen.add(t.id);
+      let mesh = this.tracerMeshes.get(t.id);
+      if (!mesh) {
+        const geo = new THREE.PlaneGeometry(0.045, 0.34);
+        const mat = new THREE.MeshBasicMaterial({
+          map: this.tracerTex, transparent: true, depthWrite: false,
+        });
+        mesh = new THREE.Mesh(geo, mat);
+        this.scene.add(mesh);
+        this.tracerMeshes.set(t.id, mesh);
+      }
+      mesh.position.set(t.x, -t.y, t.z);
+      // streak tip at image-top; same orientation convention as sprites
+      mesh.rotation.z = -t.angle + Math.PI / 2;
+    }
+    for (const [id, mesh] of this.tracerMeshes) {
+      if (!seen.has(id)) {
+        this.scene.remove(mesh);
+        mesh.geometry.dispose();
+        this.tracerMeshes.delete(id);
+      }
+    }
   }
 
   private flatQuad(at: { x: number; y: number; z: number }, size: number, kind: string, lift: number): THREE.Mesh {

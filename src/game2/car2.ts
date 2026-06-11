@@ -50,6 +50,9 @@ export class Car2 {
   driver: 'player' | 'ai' | null = null;
   controls: CarControls = { throttle: 0, steer: 0, handbrake: false };
   exploded = false;
+  /** GTA2: a badly damaged car catches fire and burns before exploding. */
+  onFire = false;
+  private burnTime = 0;
   /** length/width in blocks (style stores pixels, 64 px = 1 block) */
   readonly length: number;
   readonly width: number;
@@ -99,6 +102,15 @@ export class Car2 {
   update(dt: number, map: CityMap, emit: (e: GameEvent) => void): void {
     if (this.exploded) return;
     this.crashCooldown = Math.max(0, this.crashCooldown - dt);
+
+    // Burning cars cook off after a few seconds.
+    if (this.onFire) {
+      this.burnTime += dt;
+      if (this.burnTime > 4) {
+        this.explode(emit);
+        return;
+      }
+    }
 
     const h = this.handling;
     const cos = Math.cos(this.heading);
@@ -166,13 +178,29 @@ export class Car2 {
     }
   }
 
-  applyDamage(amount: number, emit: (e: GameEvent) => void): void {
+  /**
+   * Gradual damage (bullets, crashes): the car catches fire when battered
+   * and explodes a few seconds later. `instant` (explosions) skips the burn.
+   */
+  applyDamage(amount: number, emit: (e: GameEvent) => void, instant = false): void {
     if (this.exploded) return;
     this.health -= amount;
-    if (this.health <= 0) {
-      this.exploded = true;
-      this.vel = vec();
-      emit({ type: 'explosion', pos: { ...this.pos } });
+    if (this.health <= 0 && instant) {
+      this.explode(emit);
+      return;
     }
+    if (this.health <= 20 && !this.onFire) {
+      this.onFire = true;
+      this.burnTime = 0;
+      emit({ type: 'car_fire', pos: { ...this.pos } });
+    }
+  }
+
+  private explode(emit: (e: GameEvent) => void): void {
+    if (this.exploded) return;
+    this.exploded = true;
+    this.onFire = false;
+    this.vel = vec();
+    emit({ type: 'explosion', pos: { ...this.pos } });
   }
 }

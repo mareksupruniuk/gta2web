@@ -42,7 +42,7 @@ let PED_SPRITE_BASE = 0;
 let OBJ_SPRITE_BASE = 0;
 const PED_WALK_FRAMES = 8;
 const PED_ARMED_BASE = 8; // aiming/armed walk cycle
-const PED_CORPSE_FRAME = 117; // prone pose
+const PED_CORPSE_FRAME = 97; // sprawled-on-back death pose
 const PICKUP_SPRITES: Record<Pickup['kind'], number> = {
   pistol: 18,
   uzi: 28,
@@ -220,11 +220,19 @@ function fxFromEvents(events: GameEvent[], w: World2): FxSpawn[] {
         out.push({ kind: 'muzzle', x, y, z: w.player.z + 0.5 });
         break;
       }
-      case 'hit':
-        out.push({ kind: 'spark', x: e.pos.x, y: e.pos.y, z: z(e.pos.x, e.pos.y) + 0.3 });
+      case 'hit': {
+        const kind = e.surface === 'ped' ? 'bloodspray' : e.surface === 'car' ? 'spark' : 'dust';
+        out.push({ kind, x: e.pos.x, y: e.pos.y, z: z(e.pos.x, e.pos.y) + 0.3 });
         break;
+      }
       case 'ped_killed':
         out.push({ kind: 'blood', x: e.pos.x, y: e.pos.y, z: z(e.pos.x, e.pos.y) });
+        out.push({ kind: 'bloodspray', x: e.pos.x, y: e.pos.y, z: z(e.pos.x, e.pos.y) + 0.2 });
+        break;
+      case 'car_fire':
+        for (let i = 0; i < 3; i++) {
+          out.push({ kind: 'fire', x: e.pos.x, y: e.pos.y, z: z(e.pos.x, e.pos.y) + 0.25 });
+        }
         break;
       case 'car_crash':
         if (e.speed > 2.2) out.push({ kind: 'smoke', x: e.pos.x, y: e.pos.y, z: z(e.pos.x, e.pos.y) + 0.2 });
@@ -280,9 +288,20 @@ function tick(now: number): void {
       if (respawnTimer <= 0) respawnPlayer();
     }
 
-    // bullet tracers
-    for (const b of world.bullets) {
-      renderer.spawnFx({ kind: 'spark', x: b.pos.x, y: b.pos.y, z: b.z });
+    // Burning cars: continuous flames + smoke until they cook off.
+    for (const c of world.cars) {
+      if (!c.onFire || c.exploded) continue;
+      if (Math.random() < 0.55) {
+        renderer.spawnFx({
+          kind: 'fire',
+          x: c.pos.x + (Math.random() - 0.5) * c.length * 0.5,
+          y: c.pos.y + (Math.random() - 0.5) * c.width * 0.5,
+          z: c.z + 0.15,
+        });
+      }
+      if (Math.random() < 0.2) {
+        renderer.spawnFx({ kind: 'smoke', x: c.pos.x, y: c.pos.y, z: c.z + 0.25 });
+      }
     }
 
     const car = world.player.car;
@@ -308,6 +327,9 @@ function tick(now: number): void {
   }
 
   renderer.syncEntities(entities(world));
+  renderer.syncTracers(world.bullets.map((b) => ({
+    id: b.id, x: b.pos.x, y: b.pos.y, z: b.z, angle: b.angle,
+  })));
   const p = world.player;
   renderer.update(dt, {
     x: p.pos.x, y: p.pos.y, z: p.z,

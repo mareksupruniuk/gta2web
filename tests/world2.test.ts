@@ -152,6 +152,50 @@ describe.skipIf(!haveData)('World2 on Downtown', () => {
     expect(world.player.dead).toBe(false);
   });
 
+  it('guns kill peds in one shot (GTA2 fragile peds)', () => {
+    const p = world.player;
+    p.inventory.add('pistol', 10);
+    const ped = world.peds[0];
+    ped.pos = { x: p.pos.x + 1, y: p.pos.y };
+    ped.z = p.z;
+    p.heading = 0;
+    for (let i = 0; i < 30 && !ped.dead; i++) {
+      world.update(1 / 60, { ...NEUTRAL, attack: i === 0 });
+    }
+    expect(ped.dead).toBe(true); // a single pistol round is lethal
+  });
+
+  it('shot-up cars catch fire, burn, then explode', () => {
+    const car = world.cars.find((c) => !c.driver)!;
+    // pour bullets in: pistol carDamage 7 → fire below 20 health
+    for (let i = 0; i < 12; i++) car.applyDamage(7, () => undefined);
+    expect(car.onFire).toBe(true);
+    expect(car.exploded).toBe(false);
+    const events: { type: string }[] = [];
+    // burn for 5 simulated seconds → cook-off
+    for (let i = 0; i < 60 * 5 && !car.exploded; i++) {
+      car.update(1 / 60, map, (e) => events.push(e));
+    }
+    expect(car.exploded).toBe(true);
+    expect(events.some((e) => e.type === 'explosion')).toBe(true);
+  });
+
+  it('AI drivers bail out of burning cars', () => {
+    const driven = world.cars.find((c) => c.driver === 'ai')!;
+    const pedsBefore = world.peds.length;
+    driven.applyDamage(95, () => undefined);
+    expect(driven.onFire).toBe(true);
+    world.update(1 / 60, NEUTRAL);
+    expect(driven.driver).toBeNull();
+    expect(world.peds.length).toBe(pedsBefore + 1);
+  });
+
+  it('explosions destroy cars instantly (chain), bullets do not', () => {
+    const car = world.cars.find((c) => !c.driver)!;
+    car.applyDamage(500, () => undefined, true);
+    expect(car.exploded).toBe(true);
+  });
+
   it('collects pickups', () => {
     const pk = world.pickups.find((p) => p.kind !== 'health') ?? world.pickups[0];
     world.player.pos = { ...pk.pos };
