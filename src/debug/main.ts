@@ -14,8 +14,8 @@ function putRGBA(ctx: CanvasRenderingContext2D, data: Uint8Array, w: number, h: 
 
 async function main(): Promise<void> {
   const [styBuf, gmpBuf] = await Promise.all([
-    fetch('/gamedata/bil.sty').then((r) => r.arrayBuffer()),
-    fetch('/gamedata/bil.gmp').then((r) => r.arrayBuffer()),
+    fetch('/gamedata/wil.sty').then((r) => r.arrayBuffer()),
+    fetch('/gamedata/wil.gmp').then((r) => r.arrayBuffer()),
   ]);
   const sty = parseSty(styBuf);
   const gmp = parseGmp(gmpBuf);
@@ -101,11 +101,12 @@ async function main(): Promise<void> {
     }
   }
 
-  // --- 2D map render: top lids of a 64x64 block area around map centre
+  // --- 2D map render: top lids (?full renders the whole 256x256 map)
   {
     const c = document.getElementById('map') as HTMLCanvasElement;
-    const AREA = 64;
-    const PX = 8; // pixels per block
+    const full = location.search.includes('full');
+    const AREA = full ? 256 : 64;
+    const PX = full ? 5 : 8; // pixels per block
     c.width = AREA * PX;
     c.height = AREA * PX;
     const ctx = c.getContext('2d')!;
@@ -128,8 +129,8 @@ async function main(): Promise<void> {
     };
     let roads = 0;
     let pavement = 0;
-    const x0 = 96;
-    const y0 = 96;
+    const x0 = full ? 0 : 96;
+    const y0 = full ? 0 : 96;
     for (let y = 0; y < AREA; y++) {
       for (let x = 0; x < AREA; x++) {
         const col = gmp.getColumn(x0 + x, y0 + y);

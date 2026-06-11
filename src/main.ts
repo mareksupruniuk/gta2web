@@ -101,9 +101,11 @@ async function startGame(): Promise<void> {
     PED_SPRITE_BASE = sty.spriteBase.car;
     OBJ_SPRITE_BASE = sty.spriteBase.car + sty.spriteBase.ped;
     const map = new CityMap(parseGmp(gmpBuf));
-    world = new World2(map, sty);
+    // Spawn outside the Jesus Saves church in Avalon (north-west Downtown).
+    world = new World2(map, sty, 1999, { x: 9.5, y: 14.5 });
     (window as unknown as { __world: World2 }).__world = world; // debug/test hook
     renderer = CityRenderer.create($('game'), map.gmp, sty);
+    (window as unknown as { __renderer: CityRenderer }).__renderer = renderer;
 
     menuEl.classList.add('hidden');
     hudEl.classList.add('visible');
@@ -159,6 +161,7 @@ function entities(w: World2): RenderEntity[] {
       remapPhys: ped.remap >= 0 ? s.pedRemapPalette(ped.remap) : undefined,
       x: ped.pos.x, y: ped.pos.y, z: ped.z + (ped.dead ? 0.02 : 0.03),
       angle: ped.heading,
+      angleOffset: Math.PI, // ped art faces image-bottom
     });
   }
   const p = w.player;
@@ -169,6 +172,7 @@ function entities(w: World2): RenderEntity[] {
       sprite: PED_SPRITE_BASE + frame,
       x: p.pos.x, y: p.pos.y, z: p.z + 0.035,
       angle: p.heading,
+      angleOffset: Math.PI, // ped art faces image-bottom
     });
   }
   w.pickups.forEach((pk, i) => {
@@ -298,9 +302,10 @@ function tick(now: number): void {
 function respawnPlayer(): void {
   if (!world) return;
   const p = world.player;
-  const spawn = world.map.playerSpawn();
+  const spawn = world.spawnPoint;
   p.pos = { x: spawn.x, y: spawn.y };
   p.z = spawn.z;
+  p.heading = -Math.PI / 2; // face the church entrance
   p.health = 100;
   p.dead = false;
   p.car = null;

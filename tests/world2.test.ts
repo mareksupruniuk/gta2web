@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { parseGmp } from '../src/gta2/gmp';
 import { parseSty } from '../src/gta2/sty';
 import { CityMap } from '../src/game2/citymap';
-import { PlayerInput, World2 } from '../src/game2/world2';
+import { PlayerInput, pushOutOfCar, World2 } from '../src/game2/world2';
 
 const DATA = join(__dirname, '..', 'gamedata');
 const haveData = existsSync(join(DATA, 'wil.gmp')) && existsSync(join(DATA, 'wil.sty'));
@@ -117,6 +117,39 @@ describe.skipIf(!haveData)('World2 on Downtown', () => {
     }
     expect(ped.dead).toBe(true);
     expect(p.score).toBe(score0 + 10);
+  });
+
+  it('cars are solid: a body inside a car gets pushed out', () => {
+    const car = world.cars[0];
+    const r = 0.14;
+    const pos = { x: car.pos.x + 0.05, y: car.pos.y + 0.05 };
+    pushOutOfCar(pos, r, car);
+    // transform into car frame and assert outside the inflated box
+    const c = Math.cos(car.heading);
+    const s = Math.sin(car.heading);
+    const dx = pos.x - car.pos.x;
+    const dy = pos.y - car.pos.y;
+    const lx = Math.abs(dx * c + dy * s);
+    const ly = Math.abs(-dx * s + dy * c);
+    const outside = lx >= car.length / 2 + r - 1e-9 || ly >= car.width / 2 + r - 1e-9;
+    expect(outside).toBe(true);
+    // a point already outside is untouched
+    const far = { x: car.pos.x + 5, y: car.pos.y };
+    pushOutOfCar(far, r, car);
+    expect(far).toEqual({ x: car.pos.x + 5, y: car.pos.y });
+  });
+
+  it('exiting a moving car does not instantly kill the player', () => {
+    const parked = world.cars.find((c) => !c.driver)!;
+    world.player.pos = { x: parked.pos.x, y: parked.pos.y };
+    world.player.z = parked.z;
+    world.update(1 / 60, { ...NEUTRAL, enterExit: true });
+    expect(world.player.car).toBe(parked);
+    for (let i = 0; i < 60; i++) world.update(1 / 60, { ...NEUTRAL, moveY: -1 }); // get up to speed
+    world.update(1 / 60, { ...NEUTRAL, enterExit: true }); // bail out
+    expect(world.player.car).toBeNull();
+    for (let i = 0; i < 30; i++) world.update(1 / 60, NEUTRAL);
+    expect(world.player.dead).toBe(false);
   });
 
   it('collects pickups', () => {

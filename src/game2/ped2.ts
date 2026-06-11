@@ -78,9 +78,9 @@ export class Ped2 {
 
     const nx = this.pos.x + Math.cos(this.heading) * speed * dt;
     const ny = this.pos.y + Math.sin(this.heading) * speed * dt;
-    if (map.canMove(this.pos.x, this.pos.y, nx, this.pos.y, this.z, 0.6)) this.pos.x = nx;
+    if (map.canMoveBody(this.pos.x, this.pos.y, nx, this.pos.y, this.z, PED_RADIUS, 0.6)) this.pos.x = nx;
     else this.dirTimer = 0;
-    if (map.canMove(this.pos.x, this.pos.y, this.pos.x, ny, this.z, 0.6)) this.pos.y = ny;
+    if (map.canMoveBody(this.pos.x, this.pos.y, this.pos.x, ny, this.z, PED_RADIUS, 0.6)) this.pos.y = ny;
     else this.dirTimer = 0;
     const g = map.groundZ(this.pos.x, this.pos.y, this.z + 0.55);
     if (g !== null) this.z = g < this.z - 0.05 ? Math.max(g, this.z - 4 * dt) : g;

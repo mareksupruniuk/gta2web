@@ -65,10 +65,34 @@ export class Player2 {
   }
 }
 
+/**
+ * Treat a car as a solid oriented box: if the circle (pos, r) overlaps it,
+ * push pos out along the axis of least penetration. Mutates pos.
+ */
+export function pushOutOfCar(pos: Vec2, r: number, car: Car2): void {
+  const c = Math.cos(car.heading);
+  const s = Math.sin(car.heading);
+  const dx = pos.x - car.pos.x;
+  const dy = pos.y - car.pos.y;
+  const lx = dx * c + dy * s; // along car length
+  const ly = -dx * s + dy * c; // along car width
+  const hx = car.length / 2 + r;
+  const hy = car.width / 2 + r;
+  if (Math.abs(lx) >= hx || Math.abs(ly) >= hy) return;
+  let nlx = lx;
+  let nly = ly;
+  if (hx - Math.abs(lx) < hy - Math.abs(ly)) nlx = Math.sign(lx || 1) * hx;
+  else nly = Math.sign(ly || 1) * hy;
+  pos.x = car.pos.x + nlx * c - nly * s;
+  pos.y = car.pos.y + nlx * s + nly * c;
+}
+
 export class World2 {
   readonly map: CityMap;
   readonly sty: Sty;
   readonly rng: Rng;
+  /** where the player (re)spawns */
+  readonly spawnPoint: { x: number; y: number; z: number };
   player: Player2;
   cars: Car2[] = [];
   drivers: TrafficAI[] = [];
@@ -83,12 +107,21 @@ export class World2 {
   private corpseTimers = new Map<number, number>();
   private wreckTimers = new Map<number, number>();
   private repopTimer = 0;
+  /** bail-out grace: the car just exited can't run the player over briefly */
+  private exitedCar: Car2 | null = null;
+  private exitGrace = 0;
 
-  constructor(map: CityMap, sty: Sty, seed = 1999) {
+  constructor(map: CityMap, sty: Sty, seed = 1999, spawn?: { x: number; y: number }) {
     this.map = map;
     this.sty = sty;
     this.rng = new Rng(seed);
-    this.player = new Player2(map.playerSpawn());
+    if (spawn) {
+      const z = map.groundZ(spawn.x, spawn.y, 7.9);
+      this.spawnPoint = z !== null ? { ...spawn, z } : map.playerSpawn();
+    } else {
+      this.spawnPoint = map.playerSpawn();
+    }
+    this.player = new Player2(this.spawnPoint);
 
     // Cars that make sense as street traffic: normal sized, recyclable.
     this.usableCars = sty.cars.filter((c) => c.rating !== 99 && c.h <= 80 && c.w >= 20);
@@ -173,6 +206,7 @@ export class World2 {
 
   update(dt: number, input: PlayerInput): void {
     this.time += dt;
+    this.exitGrace = Math.max(0, this.exitGrace - dt);
     const player = this.player;
     player.inventory.tick(dt);
 
@@ -204,7 +238,16 @@ export class World2 {
 
     for (const car of this.cars) car.update(dt, this.map, this.emit);
     this.resolveCarCollisions();
-    for (const ped of this.peds) ped.update(dt, this.map, this.rng);
+    for (const ped of this.peds) {
+      ped.update(dt, this.map, this.rng);
+      if (ped.dead) continue;
+      for (const car of this.cars) {
+        // fast cars run peds over (handled below); slow ones are solid
+        if (car.speed() < 0.6 && Math.abs(car.z - ped.z) < 0.8) {
+          pushOutOfCar(ped.pos, PED_RADIUS, car);
+        }
+      }
+    }
     this.runOverChecks();
     this.updateBullets(dt);
     this.updatePickups(dt);
@@ -224,13 +267,18 @@ export class World2 {
     const speed = input.moveY < 0 ? WALK_SPEED : input.moveY > 0 ? -BACK_SPEED : 0;
     p.moving = speed !== 0;
     if (p.moving) p.animTime += dt;
-    if (speed === 0) return;
-    const nx = p.pos.x + Math.cos(p.heading) * speed * dt;
-    const ny = p.pos.y + Math.sin(p.heading) * speed * dt;
-    if (this.map.canMove(p.pos.x, p.pos.y, nx, p.pos.y, p.z, 0.6)) p.pos.x = nx;
-    if (this.map.canMove(p.pos.x, p.pos.y, p.pos.x, ny, p.z, 0.6)) p.pos.y = ny;
-    const g = this.map.groundZ(p.pos.x, p.pos.y, p.z + 0.55);
-    if (g !== null) p.z = g < p.z - 0.05 ? Math.max(g, p.z - 4 * dt) : g;
+    if (speed !== 0) {
+      const nx = p.pos.x + Math.cos(p.heading) * speed * dt;
+      const ny = p.pos.y + Math.sin(p.heading) * speed * dt;
+      if (this.map.canMoveBody(p.pos.x, p.pos.y, nx, p.pos.y, p.z, PLAYER_RADIUS, 0.6)) p.pos.x = nx;
+      if (this.map.canMoveBody(p.pos.x, p.pos.y, p.pos.x, ny, p.z, PLAYER_RADIUS, 0.6)) p.pos.y = ny;
+      const g = this.map.groundZ(p.pos.x, p.pos.y, p.z + 0.55);
+      if (g !== null) p.z = g < p.z - 0.05 ? Math.max(g, p.z - 4 * dt) : g;
+    }
+    // Cars are solid: don't let the player stand inside one.
+    for (const car of this.cars) {
+      if (Math.abs(car.z - p.z) < 0.8) pushOutOfCar(p.pos, PLAYER_RADIUS, car);
+    }
   }
 
   private toggleEnterExit(): void {
@@ -250,6 +298,8 @@ export class World2 {
       car.driver = null;
       car.controls = { throttle: 0, steer: 0, handbrake: false };
       player.car = null;
+      this.exitedCar = car;
+      this.exitGrace = 2;
       this.emit({ type: 'car_exit', pos: { ...player.pos } });
       return;
     }
@@ -359,6 +409,7 @@ export class World2 {
         }
       }
       const p = this.player;
+      if (car === this.exitedCar && this.exitGrace > 0) continue;
       if (!p.car && !p.dead && Math.abs(p.z - car.z) < 0.8 && dist(p.pos, car.pos) < hitR + PLAYER_RADIUS) {
         p.applyDamage(speed * 14);
         this.emit({ type: 'hit', pos: { ...p.pos } });

@@ -85,6 +85,17 @@ export class CityMap {
     return true;
   }
 
+  /**
+   * Radius-aware variant of canMove for bodies (player/peds): the centre and
+   * the four edge points of the body circle must all be able to make the move.
+   */
+  canMoveBody(x0: number, y0: number, x1: number, y1: number, z: number, r: number, maxStep = 0.55): boolean {
+    for (const [ox, oy] of [[0, 0], [r, 0], [-r, 0], [0, r], [0, -r]] as const) {
+      if (!this.canMove(x0 + ox, y0 + oy, x1 + ox, y1 + oy, z, maxStep)) return false;
+    }
+    return true;
+  }
+
   /** wall when crossing from column (bx,by) to (bx+sx,by) at level lvl */
   private wallBetweenX(bx: number, by: number, sx: number, lvl: number): boolean {
     const here = this.gmp.getBlock(bx, by, lvl);

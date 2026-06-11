@@ -22,6 +22,11 @@ export interface RenderEntity {
   scale?: number;
   /** colour multiplier, e.g. 0x333333 to darken wrecks */
   tint?: number;
+  /**
+   * canonical art orientation correction in radians (STY car art noses point
+   * image-top, ped art faces image-bottom → peds need Math.PI)
+   */
+  angleOffset?: number;
 }
 
 export interface FxSpawn {
@@ -169,8 +174,9 @@ export class CityRenderer {
         this.entityMeshes.set(e.key, rec);
       }
       rec.mesh.position.set(e.x, -e.y, e.z);
-      // Sprite art faces image-top; map heading 0 = +x, y-flip negates angles.
-      rec.mesh.rotation.z = -e.angle - Math.PI / 2;
+      // Sprite art noses point image-top; map heading 0 = +x (east). Verified
+      // against close-up screenshots of car sprites at forced headings.
+      rec.mesh.rotation.z = -(e.angle + (e.angleOffset ?? 0)) - Math.PI / 2;
       const s = e.scale ?? 1;
       rec.mesh.scale.set(s, s, 1);
     }

@@ -28,7 +28,8 @@ await page.waitForFunction(() => !!window.__world && !!document.querySelector('#
 await page.waitForTimeout(2000);
 await page.screenshot({ path: '.verify/2-onfoot.png' });
 
-// Rotation controls: walk forward, then rotate.
+// Rotation controls: walk forward (facing away from the church wall).
+await page.evaluate(() => { window.__world.player.heading = Math.PI / 2; });
 const pos0 = await page.evaluate(() => ({ ...window.__world.player.pos }));
 await page.keyboard.down('KeyW');
 await page.waitForTimeout(900);
@@ -56,13 +57,15 @@ await page.keyboard.up('KeyW');
 const carPos1 = await page.evaluate(() => ({ ...window.__world.player.car.pos }));
 if (Math.hypot(carPos1.x - carPos0.x, carPos1.y - carPos0.y) < 1) fail('car did not drive');
 
-// Exit, grab a pistol via debug hook, fire.
+// Let the car coast to a stop, then exit, grab a pistol, fire.
+await page.waitForTimeout(1200);
 await page.keyboard.press('Enter');
 await page.waitForTimeout(250);
 if (await page.evaluate(() => !!window.__world.player.car)) fail('did not exit car');
+if (await page.evaluate(() => window.__world.player.dead)) fail('player died on exit');
 await page.evaluate(() => window.__world.player.inventory.add('pistol', 24));
 await page.keyboard.down('Space');
-await page.waitForTimeout(60);
+await page.waitForTimeout(180);
 await page.keyboard.up('Space');
 const ammo = await page.evaluate(() => window.__world.player.inventory.currentAmmo());
 if (ammo !== 23) fail(`pistol shot should leave 23 ammo, got ${ammo}`);
