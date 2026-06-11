@@ -647,3 +647,105 @@ collision rect — not the sprite bitmap size:
   Car_BC.cpp:1290-1291), SMG muzzle x-offset (Car_BC.cpp:2377-2404).
 - Wheel offsets `front/rear_wheel_offset` (CARI, signed bytes) use the same
   /64 conversion (CarInfo_808.cpp:598-619).
+
+---
+
+## 8. Player constants (movement, health, weapon damage)
+
+Sources: `char.cpp` (Char_B4 movement/jump), `Ped.cpp`, `Player.cpp`,
+`Weapon_30.cpp` / `Weapon_8.cpp`, `Car_BC.cpp` (damage application).
+
+### On-foot movement
+
+- Run speed: `gRunOrJumpSpeed_6FD7D0 = Fix16(4) * 256 raw = 1024 raw =`
+  **0.0625 tiles/tick** (1.875 tiles/s @30fps) — char.cpp:51-58; identical
+  to the generic ped run speed (section 5). Every Char_B4 gets
+  `field_3C_run_or_jump_speed = gRunOrJumpSpeed` at init (char.cpp:190, 260).
+- Acceleration: velocity steps toward `field_3C_run_or_jump_speed` by
+  `dword_6FD99C = 256raw / 4.0 = 64 raw =` **1/256 tile/tick²**
+  (char.cpp:76, 2793-2870) — 0 to full speed in 16 ticks (~0.53 s); same
+  step is used to decelerate.
+- Walking backwards uses the *same* target speed but sets sprite flag 8 and
+  a 180-degree-ish rotation offset `word_6FD936` (char.cpp:2845-2872) — the
+  flag is what makes the camera look behind (section 5 camera notes).
+- Jump (`Char_B4::DoJump_5454D0`, char.cpp:373-395): enters
+  `Char_B4_state::Jumping_15` / anim state 5, sets velocity to
+  `gRunOrJumpSpeed` (0.0625 tiles/tick); air frames cap at animation frame
+  5. While jumping the same accelerate-toward-run-speed rule applies
+  (char.cpp:2782-2815).
+
+### Health
+
+- Player ped: **100 HP**, with **50 ticks invulnerability** on (re)spawn
+  (`Ped.cpp:1109-1110`, `sub_45C410` Ped.cpp:1135-1138). Health pickup
+  restores to 100 (Player.cpp:631-637); armor powerup = timer slot 3 set to
+  10 (Player.cpp:639-645).
+- NPC reference: dummy peds/gang 100, walking cop 50/100 by wanted level
+  (section 5), car cops 200 (Police_7B8.cpp:160, 173), FBI 200, SWAT 400
+  (Police_38.cpp:236-282).
+- `Ped::TakeDamage` (Ped.cpp:1513-1534): subtracts unless
+  `field_208_invulnerability > 0`; death via `Kill_46F9D0` at <= 0.
+
+### Damage to peds
+
+Per-bullet ped damage is **NOT in the decomp yet** —
+`Ped::HandlePedHitByObject_45D000` is a stub (`NOT_IMPLEMENTED`,
+Ped.cpp:1546-1551). What does exist:
+
+| source | damage | ref |
+|---|---|---|
+| punch | 10 vs player victim, 20 vs NPC victim; only applied while victim health > 30 (below that the punch knockdown takes over); a mugger's punch steals $10 x multiplier instead | Ped.cpp:1456-1479 |
+| on fire | 1 HP / tick | Ped.cpp:871 |
+| fall (anim frames 10-13) | 4 HP / frame; frames 14-16 switch to lethal fall | char.cpp:1259-1290 |
+| electrocution | accumulates shock counter against `field_212_electrocution_threshold = 100` | Ped.cpp:589-590 |
+
+### Damage to cars (`HandleCarHitByObject_43F130`, Car_BC.cpp:3755-3934)
+
+Car damage is an accumulator `field_74_damage` 0..32000 (32001 = wrecked
+sentinel). `AccumulateDamage_43DA90` (Car_BC.cpp:3287-3343): applied damage
+= `anti_strength * damage` (min 1); smoke/fire effect at >= 16000, heavy
+fire at >= 25000, `PrepareForExplosion` at >= 31500, explosion at 32000.
+Damage also caps top speed: above 16000, max speed scales by
+`(32001 - damage)/16000` (`GetDamageFactorOnSpeed_439EE0` +
+`GetMaxSpeed_439F30`, Car_BC.cpp:1305-1323).
+
+Per-projectile damage (object model -> damage, Car_BC.cpp:3809-3918);
+`mult` = 2 with the double-damage powerup (`power_up_timers[7]`,
+`sub_45CF90` Car_BC.cpp:3733-3753), else 1:
+
+| projectile model | spawned by | damage vs car |
+|---|---|---|
+| 254 (generic bullet) | NPC pistol, SMG/silenced SMG (Weapon_30.cpp:292, 363), car SMG (:615-616), army jeep gun | **800 x mult** (default case :3899-3917) |
+| 265 (player pistol bullet) | player pistol/dual pistol (Weapon_30.cpp:292) | **1600 x mult** (:3880-3897) |
+| 128 (rocket) | rocket launcher (Weapon_30.cpp:820, 842) | **32000** = instant wreck + explosion (:3812-3833) |
+| 138 (molotov) | molotov throw (`throwable_5DDFC0(138, ...)`, Weapon_30.cpp:750) | **32000** (:3812-3833) |
+| 10 (mine) | car mines (Weapon_30.cpp:575) | **32000**, one car per mine (:3847-3872) |
+| 194 (flame/explosion fragment) | explosions / flames | **100 x mult** (:3835-3845) |
+| 198 / 251 (water jet) | fire-truck cannon | no damage, extinguishes car fire sprites (:3874-3878) |
+| 183 (grenade) | grenade throw (Weapon_30.cpp:765-771) | falls into default = 800 x mult on direct hit; the real damage comes from its explosion objects |
+| 154 / 159 / 193 / 195 / 199 | "dud" shots (e.g. fired while in water, flamethrower stream segments) | none — early-out (:3783-3787, `sub_48E720` :3647-3667) |
+
+Bullet hits also notify the AI (`HandleShootingAtCar_46FC90`,
+Car_BC.cpp:3775) and set brake-light flash `field_AC = 3` for models
+192/254/265 (:3920-3923).
+
+### Fire rate and default ammo
+
+`field_2_reload_speed` = ticks until the weapon can fire again
+(decremented per tick, Weapon_30.cpp):
+
+| weapon | ticks between shots |
+|---|---|
+| pistol | 20 (:310); 5 for the in-water dud shot (:328) |
+| SMG / silenced SMG | 2 (:376) |
+| rocket launcher | 50 (:861) |
+| car SMG | 2 (:624) |
+| army gun jeep | 2 (:521) |
+| shotgun / dual pistol | stubs (`NOT_IMPLEMENTED`, :273-276, :338-342) |
+
+Default ammo on pickup (`byte_5FF778`, Weapon_8.cpp:19-20, used when ammo
+arg = 100, Ped.cpp:1553-1558): pistol 10, SMG 10, rocket 5, shocker 20,
+molotov 5, grenade 5, shotgun 10, electro baton 20, flamethrower 20,
+silenced SMG 10, dual pistol 10, car bomb 1, oil slick 5, mines 5,
+car SMG 10, tank gun 50, fire-truck gun 50, fire-truck flamethrower 20,
+gun jeep 50. Ammo 0xFFFF = infinite (Weapon_30.hpp:56-59).

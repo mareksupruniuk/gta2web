@@ -10,7 +10,8 @@ import { Bullet, Flame, Inventory, Thrown, WEAPONS } from './weapons2';
 import { HEAT_PER, Wanted } from './wanted';
 
 export const PLAYER_RADIUS = 0.14;
-const WALK_SPEED = 1.8;
+// authentic player run speed: 0.0625 tiles/tick @ 30fps (docs §8)
+const WALK_SPEED = 1.875;
 const BACK_SPEED = 0.9;
 const TURN_RATE = 3.8;
 const ENTER_CAR_DIST = 0.95;

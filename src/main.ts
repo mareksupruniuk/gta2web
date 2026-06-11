@@ -156,7 +156,7 @@ async function startGame(): Promise<void> {
     paused = false;
     lastT = performance.now();
     rafId = requestAnimationFrame(tick);
-    showMsg('Welcome to Downtown. ENTER steals a car.', 4);
+    showMsg(`Welcome to ${DISTRICT_NAMES[district] ?? district}. ENTER steals a car.`, 4);
   } catch (e) {
     btnStart.textContent = 'PLAY';
     showMsg(e instanceof Error ? e.message : String(e), 6);
@@ -198,8 +198,9 @@ function entities(w: World2): RenderEntity[] {
   const out: RenderEntity[] = [];
   const s = sty!;
   for (const car of w.cars) {
-    // Visible damage: composite the style file's dent deltas as health drops.
-    const dents = car.exploded ? 0 : car.health < 25 ? 3 : car.health < 45 ? 2 : car.health < 70 ? 1 : 0;
+    // Visible damage: deltas 0-3 are the four corner dents, 4 the smashed
+    // windscreen (docs/gta2-reference.md §6) — pile them on as health drops.
+    const dents = car.exploded ? 0 : car.health < 15 ? 5 : car.health < 30 ? 4 : car.health < 45 ? 3 : car.health < 60 ? 2 : car.health < 75 ? 1 : 0;
     out.push({
       key: `car:${car.id}`,
       sprite: car.info.spriteIdx,
@@ -520,6 +521,28 @@ function respawnPlayer(): void {
   p.inventory.ammo.clear();
   p.inventory.ammo.set('fists', Infinity);
   p.inventory.current = 'fists';
+}
+
+const DISTRICT_NAMES: Record<string, string> = {
+  wil: 'Downtown',
+  ste: 'the Residential District',
+  bil: 'the Industrial District',
+};
+
+// District selection: highlight from the URL; clicking navigates so the
+// whole pipeline (map, style, sounds, spawn) reloads for the new district.
+const currentDistrict = new URLSearchParams(location.search).get('map') ?? 'wil';
+$('menu-subtitle').textContent =
+  currentDistrict === 'ste' ? 'RESIDENTIAL DISTRICT' : currentDistrict === 'bil' ? 'INDUSTRIAL DISTRICT' : 'DOWNTOWN DISTRICT';
+for (const btn of document.querySelectorAll<HTMLButtonElement>('#districts button')) {
+  btn.classList.toggle('active', btn.dataset.map === currentDistrict);
+  btn.addEventListener('click', () => {
+    if (btn.dataset.map === currentDistrict) return;
+    const url = new URL(location.href);
+    if (btn.dataset.map === 'wil') url.searchParams.delete('map');
+    else url.searchParams.set('map', btn.dataset.map!);
+    location.href = url.toString();
+  });
 }
 
 btnStart.addEventListener('click', closeMenuAndPlay);

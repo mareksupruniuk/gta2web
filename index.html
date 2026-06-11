@@ -27,8 +27,16 @@
         font-style: italic;
       }
       #menu h2 {
-        color: #888; font-size: 18px; letter-spacing: 8px; margin-bottom: 48px;
+        color: #888; font-size: 18px; letter-spacing: 8px; margin-bottom: 32px;
         font-weight: normal;
+      }
+      #districts { display: flex; gap: 8px; margin-bottom: 24px; }
+      #districts button {
+        font-size: 15px; padding: 8px 14px; letter-spacing: 1px;
+        border: 1px solid #333;
+      }
+      #districts button.active {
+        color: #ffd700; border-color: #ffd700;
       }
       #menu button {
         font-family: inherit;
@@ -91,7 +99,12 @@
     <div id="msg"></div>
     <div id="menu">
       <h1>GTA2WEB</h1>
-      <h2>DOWNTOWN DISTRICT</h2>
+      <h2 id="menu-subtitle">DOWNTOWN DISTRICT</h2>
+      <div id="districts">
+        <button data-map="wil" class="active">DOWNTOWN</button>
+        <button data-map="ste">RESIDENTIAL</button>
+        <button data-map="bil">INDUSTRIAL</button>
+      </div>
       <button id="btn-start">PLAY</button>
       <button id="btn-controls">CONTROLS</button>
       <button id="btn-sound">SOUND: ON</button>

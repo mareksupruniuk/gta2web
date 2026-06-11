@@ -5,8 +5,9 @@ import { CityMap } from './citymap';
 
 export type PedState = 'walk' | 'flee' | 'dead';
 
-const WALK_SPEED = 0.55;
-const FLEE_SPEED = 1.9;
+// authentic speeds (docs §5): walk 0.03125 tiles/tick, run 0.0625 @ 30fps
+const WALK_SPEED = 0.9375;
+const FLEE_SPEED = 1.875;
 export const PED_RADIUS = 0.13;
 export const PANIC_RADIUS = 3.2;
 
