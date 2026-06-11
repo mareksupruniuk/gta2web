@@ -5,7 +5,7 @@ import { Car2 } from './car2';
 import { CityMap } from './citymap';
 import { panicNearby, Ped2, PED_RADIUS } from './ped2';
 import { TrafficAI, dirAngle, dirNameFromArrows } from './traffic2';
-import { Bullet, Inventory, WEAPONS } from './weapons2';
+import { Bullet, Flame, Inventory, Thrown, WEAPONS } from './weapons2';
 
 export const PLAYER_RADIUS = 0.14;
 const WALK_SPEED = 1.8;
@@ -32,11 +32,21 @@ export interface PlayerInput {
   prevWeapon: boolean;
 }
 
+import type { WeaponId } from '../sim/types';
+
+export type PickupKind = Exclude<WeaponId, 'fists'> | 'health';
+
 export interface Pickup {
   pos: Vec2;
   z: number;
-  kind: 'pistol' | 'uzi' | 'shotgun' | 'health';
+  kind: PickupKind;
   respawnIn: number;
+}
+
+export interface FirePool {
+  pos: Vec2;
+  z: number;
+  ttl: number;
 }
 
 export class Player2 {
@@ -100,6 +110,11 @@ export class World2 {
   drivers: TrafficAI[] = [];
   peds: Ped2[] = [];
   bullets: Bullet[] = [];
+  thrown: Thrown[] = [];
+  flames: Flame[] = [];
+  firePools: FirePool[] = [];
+  /** electro beam fired this frame (for rendering) */
+  beam: { x0: number; y0: number; x1: number; y1: number; z: number } | null = null;
   pickups: Pickup[] = [];
   events: GameEvent[] = [];
   time = 0;
@@ -151,12 +166,16 @@ export class World2 {
   // ------------------------------------------------------------- spawning
 
   private placePickups(): void {
-    const kinds: Pickup['kind'][] = ['pistol', 'pistol', 'uzi', 'uzi', 'shotgun', 'health', 'health', 'health'];
+    const kinds: PickupKind[] = [
+      'pistol', 'dual_pistol', 'uzi', 's_uzi', 'silenced_s_uzi', 'shotgun',
+      'flamethrower', 'electrogun', 'grenade', 'molotov', 'rocket',
+      'health', 'health', 'health',
+    ];
     const near = this.pavementSpawns
-      .filter((s) => dist(s, this.player.pos) < 25)
+      .filter((s) => dist(s, this.player.pos) < 30)
       .sort((a, b) => dist(a, this.player.pos) - dist(b, this.player.pos));
     for (let i = 0; i < kinds.length && near.length > 0; i++) {
-      const s = near[Math.min(near.length - 1, 3 + i * 7)];
+      const s = near[Math.min(near.length - 1, 3 + i * 5)];
       this.pickups.push({ pos: { x: s.x, y: s.y }, z: s.z, kind: kinds[i], respawnIn: 0 });
     }
   }
@@ -209,6 +228,7 @@ export class World2 {
   update(dt: number, input: PlayerInput): void {
     this.time += dt;
     this.exitGrace = Math.max(0, this.exitGrace - dt);
+    this.beam = null;
     const player = this.player;
     player.inventory.tick(dt);
 
@@ -242,7 +262,7 @@ export class World2 {
     this.bailFromBurningCars();
     this.resolveCarCollisions();
     for (const ped of this.peds) {
-      ped.update(dt, this.map, this.rng);
+      ped.update(dt, this.map, this.rng, this.emit);
       if (ped.dead) continue;
       for (const car of this.cars) {
         // fast cars run peds over (handled below); slow ones are solid
@@ -253,6 +273,10 @@ export class World2 {
     }
     this.runOverChecks();
     this.updateBullets(dt);
+    this.updateThrown(dt);
+    this.updateFlames(dt);
+    this.updateFirePools(dt);
+    this.hornChecks();
     this.updatePickups(dt);
     this.processExplosions();
     this.cleanupAndRepopulate(dt);
@@ -342,31 +366,102 @@ export class World2 {
     const player = this.player;
     if (!player.inventory.tryFire()) return;
     const def = player.inventory.currentDef();
-    this.emit({ type: 'shot', weapon: def.id, pos: { ...player.pos } });
-
-    if (def.id === 'fists') {
-      for (const ped of this.peds) {
-        if (ped.dead || Math.abs(ped.z - player.z) > 1) continue;
-        if (dist(ped.pos, player.pos) > def.range + PED_RADIUS) continue;
-        const a = Math.atan2(ped.pos.y - player.pos.y, ped.pos.x - player.pos.x);
-        if (Math.abs(angleDiff(player.heading, a)) < 1.1) {
-          ped.applyDamage(def.pedDamage, this.emit, player.pos);
-          this.emit({ type: 'hit', pos: { ...ped.pos }, surface: 'ped' });
-          if (ped.dead) player.score += 10;
-          return;
-        }
-      }
-      return;
+    if (def.kind !== 'flame' && def.kind !== 'beam') {
+      this.emit({ type: 'shot', weapon: def.id, pos: { ...player.pos } });
     }
     const origin = {
       x: player.pos.x + Math.cos(player.heading) * 0.2,
       y: player.pos.y + Math.sin(player.heading) * 0.2,
     };
-    for (let i = 0; i < def.pellets; i++) {
-      const a = player.heading + (this.rng.next() - 0.5) * def.spread;
-      this.bullets.push(new Bullet(origin, player.z + 0.5, a, def));
+
+    switch (def.kind) {
+      case 'melee': {
+        for (const ped of this.peds) {
+          if (ped.dead || Math.abs(ped.z - player.z) > 1) continue;
+          if (dist(ped.pos, player.pos) > def.range + PED_RADIUS) continue;
+          const a = Math.atan2(ped.pos.y - player.pos.y, ped.pos.x - player.pos.x);
+          if (Math.abs(angleDiff(player.heading, a)) < 1.1) {
+            ped.applyDamage(def.pedDamage, this.emit, player.pos);
+            this.emit({ type: 'hit', pos: { ...ped.pos }, surface: 'ped' });
+            if (ped.dead) player.score += 10;
+            return;
+          }
+        }
+        return;
+      }
+      case 'bullet': {
+        for (let i = 0; i < def.pellets; i++) {
+          const a = player.heading + (this.rng.next() - 0.5) * def.spread;
+          // dual pistols fire from two muzzles side by side
+          const side = def.pellets === 2 ? (i === 0 ? 0.12 : -0.12) : 0;
+          const o = {
+            x: origin.x + Math.cos(player.heading + Math.PI / 2) * side,
+            y: origin.y + Math.sin(player.heading + Math.PI / 2) * side,
+          };
+          this.bullets.push(new Bullet(o, player.z + 0.5, a, def));
+        }
+        panicNearby(this.peds, player.pos, def.silenced ? 0.9 : undefined);
+        return;
+      }
+      case 'rocket': {
+        const rocket = new Bullet(origin, player.z + 0.5, player.heading, def);
+        rocket.isRocket = true;
+        this.bullets.push(rocket);
+        panicNearby(this.peds, player.pos);
+        return;
+      }
+      case 'thrown': {
+        this.thrown.push(new Thrown(def.id as 'grenade' | 'molotov', origin, player.z, player.heading, def.bulletSpeed));
+        return;
+      }
+      case 'flame': {
+        for (let i = 0; i < 2; i++) {
+          const a = player.heading + (this.rng.next() - 0.5) * def.spread;
+          const speed = def.bulletSpeed * this.rng.range(0.8, 1.15);
+          this.flames.push(new Flame(origin, player.z + 0.4, a, speed, def.range / def.bulletSpeed));
+        }
+        if (this.rng.chance(0.1)) panicNearby(this.peds, player.pos);
+        return;
+      }
+      case 'beam': {
+        this.fireBeam(def.range, def.pedDamage, def.carDamage);
+        if (this.rng.chance(0.2)) panicNearby(this.peds, player.pos);
+        return;
+      }
     }
-    panicNearby(this.peds, player.pos);
+  }
+
+  /** ElectroGun: instant ray that fries the first thing it touches. */
+  private fireBeam(range: number, pedDamage: number, carDamage: number): void {
+    const p = this.player;
+    const step = 0.15;
+    const dx = Math.cos(p.heading) * step;
+    const dy = Math.sin(p.heading) * step;
+    let x = p.pos.x;
+    let y = p.pos.y;
+    let traveled = 0;
+    while (traveled < range) {
+      const nx = x + dx;
+      const ny = y + dy;
+      if (!this.map.canMove(x, y, nx, ny, p.z + 0.5, 2)) break;
+      x = nx;
+      y = ny;
+      traveled += step;
+      const ped = this.peds.find((pd) => !pd.dead && Math.abs(pd.z - p.z) < 1 && dist(pd.pos, { x, y }) < PED_RADIUS + 0.12);
+      if (ped) {
+        ped.applyDamage(pedDamage, this.emit, p.pos);
+        if (ped.dead) p.score += 10;
+        this.emit({ type: 'hit', pos: { x, y }, surface: 'ped' });
+        break;
+      }
+      const car = this.cars.find((c) => !c.exploded && c !== p.car && Math.abs(c.z - p.z) < 1 && c.containsPoint(x, y, 0.05));
+      if (car) {
+        car.applyDamage(carDamage * 0.12, this.emit);
+        this.emit({ type: 'hit', pos: { x, y }, surface: 'car' });
+        break;
+      }
+    }
+    this.beam = { x0: p.pos.x, y0: p.pos.y, x1: x, y1: y, z: p.z + 0.5 };
   }
 
   /** AI drivers abandon a burning car and flee, like in GTA2. */
@@ -392,18 +487,30 @@ export class World2 {
     for (let i = 0; i < this.cars.length; i++) {
       const a = this.cars[i];
       if (a.exploded) continue;
-      const ra = a.length * 0.38;
+      const aCircles = a.collisionCircles();
       for (let j = i + 1; j < this.cars.length; j++) {
         const b = this.cars[j];
         if (b.exploded || Math.abs(a.z - b.z) > 0.8) continue;
-        const rb = b.length * 0.38;
-        const dx = b.pos.x - a.pos.x;
-        const dy = b.pos.y - a.pos.y;
-        const d = Math.hypot(dx, dy);
-        const overlap = ra + rb - d;
-        if (overlap <= 0 || d === 0) continue;
-        const nx = dx / d;
-        const ny = dy / d;
+        if (dist(a.pos, b.pos) > (a.length + b.length) * 0.6) continue;
+        // Two-circle model per car: find the deepest overlapping pair.
+        const bCircles = b.collisionCircles();
+        let overlap = 0;
+        let nx = 0;
+        let ny = 0;
+        for (const ca of aCircles) {
+          for (const cb of bCircles) {
+            const dx = cb.x - ca.x;
+            const dy = cb.y - ca.y;
+            const d = Math.hypot(dx, dy);
+            const o = ca.r + cb.r - d;
+            if (o > overlap && d > 0) {
+              overlap = o;
+              nx = dx / d;
+              ny = dy / d;
+            }
+          }
+        }
+        if (overlap <= 0) continue;
         a.pos.x -= (nx * overlap) / 2;
         a.pos.y -= (ny * overlap) / 2;
         b.pos.x += (nx * overlap) / 2;
@@ -435,17 +542,16 @@ export class World2 {
       if (car.exploded) continue;
       const speed = car.speed();
       if (speed < 0.6) continue;
-      const hitR = car.length * 0.45;
       for (const ped of this.peds) {
         if (ped.dead || Math.abs(ped.z - car.z) > 0.8) continue;
-        if (dist(ped.pos, car.pos) < hitR + PED_RADIUS) {
+        if (car.containsPoint(ped.pos.x, ped.pos.y, PED_RADIUS)) {
           ped.applyDamage(100, this.emit);
           if (car.driver === 'player') this.player.score += 10;
         }
       }
       const p = this.player;
       if (car === this.exitedCar && this.exitGrace > 0) continue;
-      if (!p.car && !p.dead && Math.abs(p.z - car.z) < 0.8 && dist(p.pos, car.pos) < hitR + PLAYER_RADIUS) {
+      if (!p.car && !p.dead && Math.abs(p.z - car.z) < 0.8 && car.containsPoint(p.pos.x, p.pos.y, PLAYER_RADIUS)) {
         p.applyDamage(speed * 14);
         this.emit({ type: 'hit', pos: { ...p.pos } });
       }
@@ -463,18 +569,23 @@ export class World2 {
       b.remaining -= step;
       let alive = b.remaining > 0;
 
+      let detonate = false;
       if (alive && !this.map.canMove(ox, oy, b.pos.x, b.pos.y, b.z, 2)) {
         this.emit({ type: 'hit', pos: { ...b.pos }, surface: 'wall' });
         alive = false;
+        detonate = true;
       }
       if (alive) {
         for (const ped of this.peds) {
           if (ped.dead || Math.abs(ped.z + 0.5 - b.z) > 0.9) continue;
           if (dist(ped.pos, b.pos) < PED_RADIUS + 0.07) {
-            ped.applyDamage(b.pedDamage, this.emit, { x: ox, y: oy });
-            if (ped.dead) this.player.score += 10;
+            if (!b.isRocket) {
+              ped.applyDamage(b.pedDamage, this.emit, { x: ox, y: oy });
+              if (ped.dead) this.player.score += 10;
+            }
             this.emit({ type: 'hit', pos: { ...b.pos }, surface: 'ped' });
             alive = false;
+            detonate = true;
             break;
           }
         }
@@ -482,17 +593,134 @@ export class World2 {
       if (alive) {
         for (const car of this.cars) {
           if (car.exploded || car === this.player.car || Math.abs(car.z + 0.5 - b.z) > 0.9) continue;
-          if (dist(car.pos, b.pos) < car.length * 0.45) {
-            car.applyDamage(b.carDamage, this.emit);
+          if (car.containsPoint(b.pos.x, b.pos.y, 0.05)) {
+            if (!b.isRocket) {
+              car.applyDamage(b.carDamage, this.emit);
+            }
             this.emit({ type: 'hit', pos: { ...b.pos }, surface: 'car' });
             alive = false;
+            detonate = true;
             break;
           }
+        }
+      }
+      if (!alive || b.remaining <= 0) {
+        // rockets explode on impact or at the end of their range
+        if (b.isRocket && (detonate || b.remaining <= 0)) {
+          this.emit({ type: 'explosion', pos: { ...b.pos } });
         }
       }
       if (alive) survivors.push(b);
     }
     this.bullets = survivors;
+  }
+
+  /** Grenades arc, land, and blow after a fuse; molotovs smash into fire pools. */
+  private updateThrown(dt: number): void {
+    const survivors: Thrown[] = [];
+    for (const t of this.thrown) {
+      t.fuse -= dt;
+      if (!t.landed) {
+        const ox = t.pos.x;
+        const oy = t.pos.y;
+        const nx = t.pos.x + t.vel.x * dt;
+        const ny = t.pos.y + t.vel.y * dt;
+        if (this.map.canMove(ox, oy, nx, ny, t.z, 2)) {
+          t.pos.x = nx;
+          t.pos.y = ny;
+        } else {
+          t.vel.x *= -0.3; // bounce off the wall
+          t.vel.y *= -0.3;
+        }
+        t.vz -= 4.5 * dt;
+        t.z += t.vz * dt;
+        const ground = this.map.groundZ(t.pos.x, t.pos.y, t.z + 0.5) ?? t.z;
+        if (t.z <= ground) {
+          t.z = ground;
+          if (t.kind === 'molotov') {
+            this.emit({ type: 'molotov_smash', pos: { ...t.pos } });
+            this.firePools.push({ pos: { ...t.pos }, z: t.z, ttl: 6 });
+            continue; // smashed
+          }
+          t.landed = true;
+          t.vel = { x: 0, y: 0 };
+        }
+      }
+      if (t.kind === 'grenade' && t.fuse <= 0) {
+        this.emit({ type: 'explosion', pos: { ...t.pos } });
+        continue;
+      }
+      survivors.push(t);
+    }
+    this.thrown = survivors;
+  }
+
+  /** Flamethrower jet particles ignite whatever they touch. */
+  private updateFlames(dt: number): void {
+    const survivors: Flame[] = [];
+    for (const f of this.flames) {
+      f.ttl -= dt;
+      if (f.ttl <= 0) continue;
+      const ox = f.pos.x;
+      const oy = f.pos.y;
+      f.pos.x += f.vel.x * dt;
+      f.pos.y += f.vel.y * dt;
+      if (!this.map.canMove(ox, oy, f.pos.x, f.pos.y, f.z, 2)) continue;
+      let burned = false;
+      for (const ped of this.peds) {
+        if (ped.dead || Math.abs(ped.z - f.z) > 1) continue;
+        if (dist(ped.pos, f.pos) < PED_RADIUS + 0.15) {
+          ped.ignite(this.emit);
+          burned = true;
+          break;
+        }
+      }
+      if (!burned) {
+        for (const car of this.cars) {
+          if (car.exploded || car === this.player.car) continue;
+          if (Math.abs(car.z - f.z) < 1 && car.containsPoint(f.pos.x, f.pos.y, 0.1)) {
+            car.applyDamage(0.8, this.emit);
+            burned = true;
+            break;
+          }
+        }
+      }
+      if (!burned) survivors.push(f);
+    }
+    this.flames = survivors;
+  }
+
+  /** Burning ground (molotovs): cooks everything inside. */
+  private updateFirePools(dt: number): void {
+    for (const pool of this.firePools) {
+      pool.ttl -= dt;
+      for (const ped of this.peds) {
+        if (!ped.dead && Math.abs(ped.z - pool.z) < 1 && dist(ped.pos, pool.pos) < 0.75) {
+          ped.ignite(this.emit);
+        }
+      }
+      for (const car of this.cars) {
+        if (!car.exploded && Math.abs(car.z - pool.z) < 1 && dist(car.pos, pool.pos) < 1) {
+          car.applyDamage(14 * dt, this.emit);
+        }
+      }
+      const p = this.player;
+      if (!p.dead && !p.car && Math.abs(p.z - pool.z) < 1 && dist(p.pos, pool.pos) < 0.7) {
+        p.applyDamage(30 * dt);
+      }
+    }
+    this.firePools = this.firePools.filter((p) => p.ttl > 0);
+  }
+
+  /** Blocked AI drivers lean on the horn now and then. */
+  private hornChecks(): void {
+    for (const d of this.drivers) {
+      const car = d.car;
+      if (car.exploded || car.speed() > 0.3) continue;
+      if (car.controls.throttle === -1 && this.rng.chance(0.006)) {
+        this.emit({ type: 'horn', pos: { ...car.pos } });
+      }
+    }
   }
 
   private updatePickups(dt: number): void {
@@ -523,7 +751,12 @@ export class World2 {
         if (!ped.dead && dist(ped.pos, e.pos) < 1.2) ped.applyDamage(100, this.emit, e.pos);
       }
       for (const car of this.cars) {
-        if (!car.exploded && dist(car.pos, e.pos) < 1.4) car.applyDamage(60, this.emit, true);
+        if (car.exploded) continue;
+        const d = dist(car.pos, e.pos);
+        // Point blank wrecks outright (rockets one-shot cars in GTA2);
+        // the blast fringe batters and usually ignites instead.
+        if (d < 0.9) car.applyDamage(150, this.emit, true);
+        else if (d < 1.6) car.applyDamage(70, this.emit, true);
       }
       if (!this.player.dead && dist(this.player.pos, e.pos) < 1.4) {
         this.player.applyDamage(this.player.car ? 35 : 60);

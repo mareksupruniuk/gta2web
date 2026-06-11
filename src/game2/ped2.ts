@@ -19,6 +19,9 @@ export class Ped2 {
   heading = 0;
   state: PedState = 'walk';
   health = 20;
+  /** set alight by flames/fire pools: runs around burning, then dies */
+  onFire = false;
+  private fireTime = 0;
   /** ped colour remap (virtual, relative to ped remap area), -1 = default */
   remap: number;
   animTime = 0;
@@ -43,6 +46,14 @@ export class Ped2 {
     this.fleeTimer = 4;
   }
 
+  ignite(emit: (e: GameEvent) => void): void {
+    if (this.dead || this.onFire) return;
+    this.onFire = true;
+    this.fireTime = 0;
+    this.panic(this.pos);
+    emit({ type: 'ped_on_fire', pos: { ...this.pos } });
+  }
+
   applyDamage(amount: number, emit: (e: GameEvent) => void, threat?: Vec2): void {
     if (this.dead) return;
     this.health -= amount;
@@ -55,9 +66,22 @@ export class Ped2 {
     }
   }
 
-  update(dt: number, map: CityMap, rng: Rng): void {
+  update(dt: number, map: CityMap, rng: Rng, emit?: (e: GameEvent) => void): void {
     if (this.dead) return;
     this.animTime += dt;
+
+    if (this.onFire) {
+      this.fireTime += dt;
+      // run around in a blind panic, then collapse
+      this.state = 'flee';
+      this.fleeTimer = 1;
+      if (rng.chance(0.15)) this.heading += rng.range(-1.2, 1.2);
+      if (this.fireTime > 2.5 && emit) {
+        this.onFire = false;
+        this.applyDamage(1000, emit);
+        return;
+      }
+    }
 
     let speed = WALK_SPEED;
     if (this.state === 'flee') {
@@ -108,8 +132,8 @@ export class Ped2 {
   }
 }
 
-export function panicNearby(peds: Ped2[], pos: Vec2): void {
+export function panicNearby(peds: Ped2[], pos: Vec2, radius = PANIC_RADIUS): void {
   for (const p of peds) {
-    if (!p.dead && dist(p.pos, pos) < PANIC_RADIUS) p.panic(pos);
+    if (!p.dead && dist(p.pos, pos) < radius) p.panic(pos);
   }
 }

@@ -4,7 +4,7 @@ import { CityMap } from './game2/citymap';
 import { Pickup, PlayerInput, World2 } from './game2/world2';
 import { parseGmp } from './gta2/gmp';
 import { parseSty, Sty } from './gta2/sty';
-import { CityRenderer, FxSpawn, RenderEntity } from './render3d/renderer3d';
+import { CityRenderer, FxSpawn, RenderEntity, TracerKind } from './render3d/renderer3d';
 import { GameEvent } from './sim/types';
 
 const FIXED_DT = 1 / 60;
@@ -43,12 +43,22 @@ let OBJ_SPRITE_BASE = 0;
 const PED_WALK_FRAMES = 8;
 const PED_ARMED_BASE = 8; // aiming/armed walk cycle
 const PED_CORPSE_FRAME = 97; // sprawled-on-back death pose
+// Pickup art: 8 rotation frames per weapon starting at these obj-sprite bases.
 const PICKUP_SPRITES: Record<Pickup['kind'], number> = {
   pistol: 18,
-  uzi: 28,
-  shotgun: 35,
+  dual_pistol: 18,
+  s_uzi: 26,
+  rocket: 34,
+  silenced_s_uzi: 42,
+  molotov: 50,
+  grenade: 58,
+  shotgun: 66,
+  electrogun: 74,
+  flamethrower: 82,
+  uzi: 90,
   health: 10,
 };
+const PICKUP_FRAMES = 8;
 
 function showMsg(text: string, seconds = 2.5): void {
   msgEl.textContent = text;
@@ -196,11 +206,13 @@ function entities(w: World2): RenderEntity[] {
   }
   w.pickups.forEach((pk, i) => {
     if (pk.respawnIn > 0) return;
+    // health is a single sprite; weapons have 8 rotation frames of art
+    const frame = pk.kind === 'health' ? 0 : Math.floor(w.time * 9 + i) % PICKUP_FRAMES;
     out.push({
       key: `pickup:${i}`,
-      sprite: OBJ_SPRITE_BASE + PICKUP_SPRITES[pk.kind],
+      sprite: OBJ_SPRITE_BASE + PICKUP_SPRITES[pk.kind] + frame,
       x: pk.pos.x, y: pk.pos.y, z: pk.z + 0.04,
-      angle: w.time * 1.5,
+      angle: 0,
       scale: 0.9,
     });
   });
@@ -233,6 +245,19 @@ function fxFromEvents(events: GameEvent[], w: World2): FxSpawn[] {
         for (let i = 0; i < 3; i++) {
           out.push({ kind: 'fire', x: e.pos.x, y: e.pos.y, z: z(e.pos.x, e.pos.y) + 0.25 });
         }
+        break;
+      case 'molotov_smash':
+        for (let i = 0; i < 5; i++) {
+          out.push({
+            kind: 'fire',
+            x: e.pos.x + (Math.random() - 0.5) * 0.6,
+            y: e.pos.y + (Math.random() - 0.5) * 0.6,
+            z: z(e.pos.x, e.pos.y) + 0.1,
+          });
+        }
+        break;
+      case 'ped_on_fire':
+        out.push({ kind: 'fire', x: e.pos.x, y: e.pos.y, z: z(e.pos.x, e.pos.y) + 0.2 });
         break;
       case 'car_crash':
         if (e.speed > 2.2) out.push({ kind: 'smoke', x: e.pos.x, y: e.pos.y, z: z(e.pos.x, e.pos.y) + 0.2 });
@@ -289,8 +314,10 @@ function tick(now: number): void {
     }
 
     // Burning cars: continuous flames + smoke until they cook off.
+    let fireNear = 0;
     for (const c of world.cars) {
       if (!c.onFire || c.exploded) continue;
+      fireNear = Math.max(fireNear, 1 - Math.hypot(c.pos.x - world.player.pos.x, c.pos.y - world.player.pos.y) / 8);
       if (Math.random() < 0.55) {
         renderer.spawnFx({
           kind: 'fire',
@@ -303,6 +330,44 @@ function tick(now: number): void {
         renderer.spawnFx({ kind: 'smoke', x: c.pos.x, y: c.pos.y, z: c.z + 0.25 });
       }
     }
+    // Fire pools (molotovs) and burning peds.
+    for (const pool of world.firePools) {
+      fireNear = Math.max(fireNear, 1 - Math.hypot(pool.pos.x - world.player.pos.x, pool.pos.y - world.player.pos.y) / 8);
+      if (Math.random() < 0.7) {
+        renderer.spawnFx({
+          kind: 'fire',
+          x: pool.pos.x + (Math.random() - 0.5) * 1.1,
+          y: pool.pos.y + (Math.random() - 0.5) * 1.1,
+          z: pool.z + 0.06,
+        });
+      }
+      if (Math.random() < 0.12) {
+        renderer.spawnFx({ kind: 'smoke', x: pool.pos.x, y: pool.pos.y, z: pool.z + 0.2 });
+      }
+    }
+    for (const ped of world.peds) {
+      if (!ped.onFire || ped.dead) continue;
+      if (Math.random() < 0.7) {
+        renderer.spawnFx({ kind: 'fire', x: ped.pos.x, y: ped.pos.y, z: ped.z + 0.12 });
+      }
+    }
+    // Rocket exhaust trail.
+    for (const b of world.bullets) {
+      if (b.isRocket && Math.random() < 0.6) {
+        renderer.spawnFx({ kind: 'smoke', x: b.pos.x, y: b.pos.y, z: b.z });
+      }
+    }
+    // ElectroGun beam.
+    if (world.beam) {
+      renderer.drawBeam(world.beam.x0, world.beam.y0, world.beam.x1, world.beam.y1, world.beam.z);
+    }
+
+    // Continuous audio layers.
+    const def = world.player.inventory.currentDef();
+    const firing = !world.player.dead && !world.player.car;
+    audio.setFlamethrower(firing && def.id === 'flamethrower' && world.flames.length > 0);
+    audio.setElectro(firing && !!world.beam);
+    audio.setFireNearby(Math.max(0, Math.min(1, fireNear)));
 
     const car = world.player.car;
     audio.setEngine(!!car && !world.player.dead, car ? Math.min(1, car.speed() / car.handling.maxSpeed) : 0);
@@ -319,7 +384,11 @@ function tick(now: number): void {
     }
   } else {
     audio.setEngine(false, 0);
+    audio.setFlamethrower(false);
+    audio.setElectro(false);
+    audio.setFireNearby(0);
   }
+  audio.setAmbience(!paused);
 
   if (msgTimer > 0) {
     msgTimer -= dt;
@@ -327,9 +396,20 @@ function tick(now: number): void {
   }
 
   renderer.syncEntities(entities(world));
-  renderer.syncTracers(world.bullets.map((b) => ({
-    id: b.id, x: b.pos.x, y: b.pos.y, z: b.z, angle: b.angle,
-  })));
+  renderer.syncTracers([
+    ...world.bullets.map((b) => ({
+      id: b.id, kind: (b.isRocket ? 'rocket' : 'bullet') as TracerKind,
+      x: b.pos.x, y: b.pos.y, z: b.z, angle: b.angle,
+    })),
+    ...world.thrown.map((t) => ({
+      id: t.id, kind: t.kind as TracerKind,
+      x: t.pos.x, y: t.pos.y, z: t.z, angle: world!.time * 7, // tumbling
+    })),
+    ...world.flames.map((f) => ({
+      id: f.id, kind: 'flame' as TracerKind,
+      x: f.pos.x, y: f.pos.y, z: f.z, angle: 0, age: f.age,
+    })),
+  ]);
   const p = world.player;
   renderer.update(dt, {
     x: p.pos.x, y: p.pos.y, z: p.z,

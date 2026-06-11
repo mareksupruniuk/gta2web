@@ -196,6 +196,73 @@ describe.skipIf(!haveData)('World2 on Downtown', () => {
     expect(car.exploded).toBe(true);
   });
 
+  it('rocket one-shots a car and detonates on impact', () => {
+    const car = world.cars.find((c) => !c.driver)!;
+    world.peds.length = 0; // clear the firing lane
+    world.player.pos = { x: car.pos.x - 4, y: car.pos.y };
+    world.player.z = car.z;
+    world.player.heading = 0;
+    world.player.inventory.add('rocket', 5);
+    world.update(1 / 60, { ...NEUTRAL, attack: true });
+    expect(world.bullets[0]?.isRocket).toBe(true);
+    for (let i = 0; i < 90; i++) world.update(1 / 60, NEUTRAL);
+    expect(car.exploded).toBe(true);
+  });
+
+  it('flamethrower ignites peds; burning peds die', () => {
+    const ped = world.peds.find((x) => !x.dead)!;
+    world.player.heading = 0;
+    world.player.inventory.add('flamethrower', 80);
+    for (let i = 0; i < 40 && !ped.onFire; i++) {
+      ped.pos = { x: world.player.pos.x + 1.2, y: world.player.pos.y };
+      ped.z = world.player.z;
+      world.update(1 / 60, { ...NEUTRAL, attack: true });
+    }
+    expect(ped.onFire).toBe(true);
+    for (let i = 0; i < 60 * 4; i++) world.update(1 / 60, NEUTRAL);
+    expect(ped.dead).toBe(true);
+  });
+
+  it('molotovs smash into fire pools that burn peds', () => {
+    world.player.heading = 0;
+    world.player.inventory.add('molotov', 6);
+    world.update(1 / 60, { ...NEUTRAL, attack: true });
+    expect(world.thrown).toHaveLength(1);
+    for (let i = 0; i < 90; i++) world.update(1 / 60, NEUTRAL);
+    expect(world.thrown).toHaveLength(0);
+    expect(world.firePools.length).toBeGreaterThan(0);
+    expect(world.drainEvents().some((e) => e.type === 'molotov_smash')).toBe(true);
+    // a ped standing in the pool catches fire
+    const pool = world.firePools[0];
+    const ped = world.peds.find((x) => !x.dead)!;
+    ped.pos = { ...pool.pos };
+    ped.z = pool.z;
+    world.update(1 / 60, NEUTRAL);
+    expect(ped.onFire).toBe(true);
+  });
+
+  it('grenades explode after their fuse', () => {
+    world.peds.length = 0;
+    world.player.inventory.add('grenade', 6);
+    world.update(1 / 60, { ...NEUTRAL, attack: true });
+    expect(world.thrown).toHaveLength(1);
+    world.drainEvents();
+    for (let i = 0; i < 60 * 3; i++) world.update(1 / 60, NEUTRAL);
+    expect(world.thrown).toHaveLength(0);
+    expect(world.drainEvents().some((e) => e.type === 'explosion')).toBe(true);
+  });
+
+  it('electrogun beam fries the first ped in line', () => {
+    const ped = world.peds.find((x) => !x.dead)!;
+    ped.pos = { x: world.player.pos.x + 2, y: world.player.pos.y };
+    ped.z = world.player.z;
+    world.player.heading = 0;
+    world.player.inventory.add('electrogun', 90);
+    world.update(1 / 60, { ...NEUTRAL, attack: true });
+    expect(world.beam).not.toBeNull();
+    expect(ped.dead).toBe(true);
+  });
+
   it('collects pickups', () => {
     const pk = world.pickups.find((p) => p.kind !== 'health') ?? world.pickups[0];
     world.player.pos = { ...pk.pos };

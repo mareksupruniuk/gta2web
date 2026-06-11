@@ -67,13 +67,29 @@ export const DIR_ANGLE: Record<Dir, number> = {
   [Dir.W]: Math.PI,
 };
 
-export type WeaponId = 'fists' | 'pistol' | 'uzi' | 'shotgun';
+export type WeaponId =
+  | 'fists'
+  | 'pistol'
+  | 'dual_pistol'
+  | 'uzi' // GTA2 "Machine Gun"
+  | 's_uzi'
+  | 'silenced_s_uzi'
+  | 'shotgun'
+  | 'rocket'
+  | 'flamethrower'
+  | 'electrogun'
+  | 'grenade'
+  | 'molotov';
 
 /** Events emitted by the simulation, consumed by audio/vfx layers. */
 export type GameEvent =
   | { type: 'shot'; weapon: WeaponId; pos: Vec2 }
   | { type: 'hit'; pos: Vec2; surface?: 'ped' | 'car' | 'wall' }
   | { type: 'car_fire'; pos: Vec2 }
+  | { type: 'molotov_smash'; pos: Vec2 }
+  | { type: 'ped_on_fire'; pos: Vec2 }
+  | { type: 'skid'; pos: Vec2; intensity: number }
+  | { type: 'horn'; pos: Vec2 }
   | { type: 'ped_killed'; pos: Vec2 }
   | { type: 'ped_scream'; pos: Vec2 }
   | { type: 'car_enter'; pos: Vec2 }

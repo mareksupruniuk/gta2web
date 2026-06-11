@@ -6,6 +6,8 @@ const AUDIBLE_RADIUS = 600;
 const MAX_VOICES = 8;
 /** Identical events within this window (seconds) are dropped. */
 const RATE_LIMIT_S = 0.03;
+/** Skid events are noisier; cap them harder. */
+const SKID_RATE_LIMIT_S = 0.15;
 /** Overall output level. */
 const MASTER_LEVEL = 0.5;
 /** Crash speed at which crash volume reaches maximum. */
@@ -13,6 +15,39 @@ const CRASH_REF_SPEED = 200;
 /** Engine loop playbackRate range driven by speedRatio. */
 const ENGINE_RATE_MIN = 0.6;
 const ENGINE_RATE_MAX = 1.6;
+
+/**
+ * Weapon ids this layer understands. The sim's WeaponId union is converging on
+ * the same set; the local union keeps this file compiling on both sides of
+ * that change (duplicated members collapse harmlessly).
+ */
+type AudioWeaponId =
+  | WeaponId
+  | 'fists'
+  | 'pistol'
+  | 'dual_pistol'
+  | 'uzi'
+  | 's_uzi'
+  | 'silenced_s_uzi'
+  | 'shotgun'
+  | 'rocket'
+  | 'flamethrower'
+  | 'electrogun'
+  | 'grenade'
+  | 'molotov';
+
+/**
+ * Events this layer understands: everything in the sim's GameEvent plus the
+ * new event shapes that are landing alongside the new weapons. Same
+ * forward-compatibility trick as AudioWeaponId.
+ */
+type AudioEvent =
+  | GameEvent
+  | { type: 'shot'; weapon: AudioWeaponId; pos: Vec2 }
+  | { type: 'molotov_smash'; pos: Vec2 }
+  | { type: 'ped_on_fire'; pos: Vec2 }
+  | { type: 'skid'; pos: Vec2; intensity: number }
+  | { type: 'horn'; pos: Vec2 };
 
 /**
  * CC0 sample files served from public/sounds/ (see src/audio/README.md for
@@ -26,9 +61,14 @@ const SAMPLE_FILES = {
   'shot-pistol': 'shot-pistol.wav',
   'shot-uzi': 'shot-uzi.wav',
   'shot-shotgun': 'shot-shotgun.wav',
+  'rocket-launch': 'rocket-launch.ogg',
   'explosion-crunch': 'explosion-crunch.ogg',
   'explosion-low': 'explosion-low.ogg',
   'crash-metal': 'crash-metal.ogg',
+  'crash-metal2': 'crash-metal2.ogg',
+  'crash-metal3': 'crash-metal3.ogg',
+  'glass-shatter': 'glass-shatter.ogg',
+  horn: 'horn.ogg',
   'door-open': 'door-open.ogg',
   'door-close': 'door-close.ogg',
   pickup: 'pickup.ogg',
@@ -37,6 +77,13 @@ const SAMPLE_FILES = {
 } as const;
 
 type SampleName = keyof typeof SAMPLE_FILES;
+
+const CRASH_SAMPLES: SampleName[] = ['crash-metal', 'crash-metal2', 'crash-metal3'];
+
+/** A lazily-built continuous loop: sources feed `gain`, which ramps 0..level. */
+interface LoopVoice {
+  gain: GainNode;
+}
 
 /**
  * Game audio: real CC0 samples (fetched and decoded asynchronously after
@@ -50,6 +97,10 @@ export class AudioManager {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
   private noiseBuffer: AudioBuffer | null = null;
+  private brownNoiseBuffer: AudioBuffer | null = null;
+  /** Sparse-impulse buffers for crackle textures (fire / electricity). */
+  private crackleSlow: AudioBuffer | null = null;
+  private crackleFast: AudioBuffer | null = null;
 
   /** Decoded CC0 samples, populated asynchronously after init(). */
   private samples = new Map<SampleName, AudioBuffer>();
@@ -64,6 +115,12 @@ export class AudioManager {
   // Sample engine loop nodes (used once the engine-loop sample has decoded).
   private engineSrc: AudioBufferSourceNode | null = null;
   private engineSrcGain: GainNode | null = null;
+
+  // Continuous synth loops (created lazily on first activation).
+  private flameLoop: LoopVoice | null = null;
+  private electroLoop: LoopVoice | null = null;
+  private fireLoop: LoopVoice | null = null;
+  private ambienceLoop: LoopVoice | null = null;
 
   /** End times (ctx time) of currently-playing one-shot voices. */
   private voiceEnds: number[] = [];
@@ -83,6 +140,9 @@ export class AudioManager {
       this.master.gain.value = this.enabled ? MASTER_LEVEL : 0;
       this.master.connect(this.ctx.destination);
       this.noiseBuffer = this.makeNoiseBuffer(this.ctx, 2);
+      this.brownNoiseBuffer = this.makeBrownNoiseBuffer(this.ctx, 3);
+      this.crackleSlow = this.makeCrackleBuffer(this.ctx, 2, 0.0009);
+      this.crackleFast = this.makeCrackleBuffer(this.ctx, 1.5, 0.006);
     }
     if (this.ctx.state === 'suspended') {
       void this.ctx.resume().catch(() => undefined);
@@ -128,13 +188,14 @@ export class AudioManager {
   handleEvents(events: GameEvent[], listenerPos: Vec2): void {
     if (!this.ready() || !this.enabled) return;
     const now = this.ctx!.currentTime;
-    for (const ev of events) {
+    for (const ev of events as AudioEvent[]) {
       const gain = this.distanceGain(ev.pos, listenerPos);
       if (gain <= 0.001) continue;
 
       const key = ev.type === 'shot' ? `shot:${ev.weapon}` : ev.type;
+      const limit = ev.type === 'skid' ? SKID_RATE_LIMIT_S : RATE_LIMIT_S;
       const last = this.lastPlayed.get(key);
-      if (last !== undefined && now - last < RATE_LIMIT_S) continue;
+      if (last !== undefined && now - last < limit) continue;
       this.lastPlayed.set(key, now);
 
       switch (ev.type) {
@@ -148,6 +209,9 @@ export class AudioManager {
         case 'ped_scream':
           this.playScream(gain, ev.type === 'ped_killed');
           break;
+        case 'ped_on_fire':
+          this.playBurningScream(gain);
+          break;
         case 'car_enter':
           this.playDoor(gain, true);
           break;
@@ -159,6 +223,15 @@ export class AudioManager {
           break;
         case 'explosion':
           this.playExplosion(gain);
+          break;
+        case 'molotov_smash':
+          this.playMolotovSmash(gain);
+          break;
+        case 'skid':
+          this.playSkid(gain, Math.min(1, Math.max(0, ev.intensity)));
+          break;
+        case 'horn':
+          this.playHorn(gain);
           break;
         case 'pickup':
           this.playPickup(gain);
@@ -203,6 +276,39 @@ export class AudioManager {
     } else {
       this.engineGain.gain.setTargetAtTime(0, t, 0.08);
     }
+  }
+
+  /** Continuous roaring flame jet loop (flamethrower held down). */
+  setFlamethrower(active: boolean): void {
+    if (!this.ready()) return;
+    if (!this.flameLoop && active) this.flameLoop = this.createFlameLoop(this.ctx!);
+    if (!this.flameLoop) return;
+    this.flameLoop.gain.gain.setTargetAtTime(active ? 0.3 : 0, this.ctx!.currentTime, active ? 0.04 : 0.09);
+  }
+
+  /** Continuous electric crackle/buzz loop (electrogun held down). */
+  setElectro(active: boolean): void {
+    if (!this.ready()) return;
+    if (!this.electroLoop && active) this.electroLoop = this.createElectroLoop(this.ctx!);
+    if (!this.electroLoop) return;
+    this.electroLoop.gain.gain.setTargetAtTime(active ? 0.16 : 0, this.ctx!.currentTime, active ? 0.025 : 0.06);
+  }
+
+  /** Burning-fire crackle near the player; gain follows intensity 0..1. */
+  setFireNearby(intensity: number): void {
+    if (!this.ready()) return;
+    const level = Math.min(1, Math.max(0, intensity));
+    if (!this.fireLoop && level > 0.001) this.fireLoop = this.createFireLoop(this.ctx!);
+    if (!this.fireLoop) return;
+    this.fireLoop.gain.gain.setTargetAtTime(0.32 * level, this.ctx!.currentTime, 0.12);
+  }
+
+  /** Very quiet city ambience bed (low wind/rumble), barely audible. */
+  setAmbience(active: boolean): void {
+    if (!this.ready()) return;
+    if (!this.ambienceLoop && active) this.ambienceLoop = this.createAmbienceLoop(this.ctx!);
+    if (!this.ambienceLoop) return;
+    this.ambienceLoop.gain.gain.setTargetAtTime(active ? 0.045 : 0, this.ctx!.currentTime, 0.4);
   }
 
   /** Per-frame housekeeping. */
@@ -295,6 +401,35 @@ export class AudioManager {
     return buf;
   }
 
+  /** Brown (integrated) noise: deep wind/rumble texture for ambience beds. */
+  private makeBrownNoiseBuffer(ctx: AudioContext, seconds: number): AudioBuffer {
+    const buf = ctx.createBuffer(1, Math.floor(ctx.sampleRate * seconds), ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    let b = 0;
+    for (let i = 0; i < data.length; i++) {
+      const white = Math.random() * 2 - 1;
+      b = (b + 0.02 * white) / 1.02;
+      data[i] = b * 3.5;
+    }
+    return buf;
+  }
+
+  /**
+   * Sparse random impulses with short decay tails — the raw material for
+   * fire crackle (low density) and electric fizz (high density).
+   */
+  private makeCrackleBuffer(ctx: AudioContext, seconds: number, density: number): AudioBuffer {
+    const buf = ctx.createBuffer(1, Math.floor(ctx.sampleRate * seconds), ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    let env = 0;
+    for (let i = 0; i < data.length; i++) {
+      if (Math.random() < density) env = 0.4 + Math.random() * 0.6;
+      data[i] = (Math.random() * 2 - 1) * env;
+      env *= 0.96;
+    }
+    return buf;
+  }
+
   /** Gain node with attack/decay envelope, connected to master. */
   private envelope(t: number, peak: number, attack: number, dur: number): GainNode {
     const g = this.ctx!.createGain();
@@ -360,7 +495,7 @@ export class AudioManager {
 
   // ----- one-shot sounds ---------------------------------------------------
 
-  private playShot(weapon: WeaponId, gain: number): void {
+  private playShot(weapon: AudioWeaponId, gain: number): void {
     const t = this.ctx!.currentTime;
     switch (weapon) {
       case 'pistol':
@@ -370,6 +505,12 @@ export class AudioManager {
         // Sharp single crack.
         this.noiseBurst({ t, dur: 0.13, peak: 0.55 * gain, type: 'lowpass', freq: 3200, freqEnd: 500, q: 0.8 });
         break;
+      case 'dual_pistol':
+        // Pistol sound, slightly wider pitch spread and a touch louder.
+        if (this.playSample('shot-pistol', 0.56 * gain, { rate: 0.92 + Math.random() * 0.16, maxDur: 1.0 })) return;
+        if (!this.claimVoice(0.14)) return;
+        this.noiseBurst({ t, dur: 0.13, peak: 0.62 * gain, type: 'lowpass', freq: 3400, freqEnd: 500, q: 0.8 });
+        break;
       case 'uzi':
         // Snappier shot pitched well up and trimmed short so the uzi reads
         // clearly different from the pistol.
@@ -378,6 +519,18 @@ export class AudioManager {
         // Short, snappy.
         this.noiseBurst({ t, dur: 0.06, peak: 0.4 * gain, type: 'lowpass', freq: 2600, freqEnd: 700, q: 0.7 });
         break;
+      case 's_uzi':
+        // Faster/snappier variant: uzi pitched up further, trimmed even shorter.
+        if (this.playSample('shot-uzi', 0.28 * gain, { rate: 1.95 + Math.random() * 0.2, maxDur: 0.12 })) return;
+        if (!this.claimVoice(0.05)) return;
+        this.noiseBurst({ t, dur: 0.045, peak: 0.36 * gain, type: 'lowpass', freq: 3200, freqEnd: 900, q: 0.7 });
+        break;
+      case 'silenced_s_uzi':
+        // Quiet suppressed 'phut': soft noise tick, low volume (synth only).
+        if (!this.claimVoice(0.06)) return;
+        this.noiseBurst({ t, dur: 0.05, peak: 0.12 * gain, attack: 0.001, type: 'lowpass', freq: 1300, freqEnd: 350, q: 0.6 });
+        this.tone({ t, dur: 0.04, peak: 0.07 * gain, attack: 0.001, type: 'sine', freq: 170, freqEnd: 90 });
+        break;
       case 'shotgun':
         if (this.playSample('shot-shotgun', 0.6 * gain, { maxDur: 1.6 })) return;
         if (!this.claimVoice(0.35)) return;
@@ -385,12 +538,27 @@ export class AudioManager {
         this.noiseBurst({ t, dur: 0.32, peak: 0.7 * gain, type: 'lowpass', freq: 1000, freqEnd: 150, q: 0.9 });
         this.noiseBurst({ t, dur: 0.12, peak: 0.35 * gain, type: 'bandpass', freq: 1800, q: 0.5 });
         break;
+      case 'rocket':
+        // Launch whoosh: thruster sample trimmed short, else a noise sweep.
+        if (this.playSample('rocket-launch', 0.55 * gain, { rate: 1.25 + Math.random() * 0.1, maxDur: 1.3 })) return;
+        if (!this.claimVoice(0.6)) return;
+        this.noiseBurst({ t, dur: 0.55, peak: 0.5 * gain, attack: 0.01, type: 'bandpass', freq: 400, freqEnd: 1800, q: 0.8 });
+        this.noiseBurst({ t, dur: 0.4, peak: 0.3 * gain, attack: 0.005, type: 'lowpass', freq: 600, freqEnd: 150, q: 1 });
+        break;
+      case 'grenade':
+      case 'molotov':
+        // Soft throw whoosh, very quiet.
+        if (!this.claimVoice(0.2)) return;
+        this.noiseBurst({ t, dur: 0.18, peak: 0.07 * gain, attack: 0.05, type: 'bandpass', freq: 400, freqEnd: 900, q: 1.5 });
+        break;
       case 'fists':
         if (!this.claimVoice(0.14)) return;
         // Soft whoosh + low thud.
         this.noiseBurst({ t, dur: 0.12, peak: 0.18 * gain, attack: 0.03, type: 'bandpass', freq: 500, freqEnd: 250, q: 1.5 });
         this.tone({ t, dur: 0.08, peak: 0.2 * gain, type: 'sine', freq: 110, freqEnd: 60 });
         break;
+      // 'flamethrower' and 'electrogun' are continuous loops
+      // (setFlamethrower/setElectro) and never emit 'shot' events.
     }
   }
 
@@ -424,29 +592,74 @@ export class AudioManager {
     osc.stop(t + dur + 0.02);
   }
 
+  /** Panicked burning scream: longer and wilder than the normal scream. */
+  private playBurningScream(gain: number): void {
+    const ctx = this.ctx!;
+    const t = ctx.currentTime;
+    const dur = 0.85 + Math.random() * 0.2;
+    if (!this.claimVoice(dur)) return;
+    const osc = ctx.createOscillator();
+    osc.type = 'sawtooth';
+    const base = 650 + Math.random() * 250;
+    // Rising panic, holding high, then collapsing.
+    osc.frequency.setValueAtTime(base, t);
+    osc.frequency.exponentialRampToValueAtTime(base * 1.9, t + dur * 0.3);
+    osc.frequency.exponentialRampToValueAtTime(base * 1.5, t + dur * 0.6);
+    osc.frequency.exponentialRampToValueAtTime(160, t + dur);
+    // Fast vibrato makes it read as a wail rather than a siren.
+    const lfo = ctx.createOscillator();
+    lfo.type = 'sine';
+    lfo.frequency.value = 11 + Math.random() * 4;
+    const lfoGain = ctx.createGain();
+    lfoGain.gain.value = 120;
+    lfo.connect(lfoGain);
+    lfoGain.connect(osc.frequency);
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.value = 1200;
+    filter.Q.value = 1.1;
+    const g = this.envelope(t, 0.26 * gain, 0.03, dur);
+    osc.connect(filter);
+    filter.connect(g);
+    osc.start(t);
+    lfo.start(t);
+    osc.stop(t + dur + 0.02);
+    lfo.stop(t + dur + 0.02);
+  }
+
   private playDoor(gain: number, entering: boolean): void {
     const t = this.ctx!.currentTime;
-    // Entering slams the door shut; exiting pops it open.
-    if (this.playSample(entering ? 'door-close' : 'door-open', 0.6 * gain)) return;
+    // Entering slams the door shut; exiting pops it open. Subtle random pitch
+    // so repeated car-jacking doesn't sound stamped from one mould.
+    const rate = 0.94 + Math.random() * 0.12;
+    if (this.playSample(entering ? 'door-close' : 'door-open', 0.6 * gain, { rate })) return;
     if (!this.claimVoice(0.12)) return;
     // Metallic clunk: low thump + brief mid rattle.
-    const freq = entering ? 140 : 170;
+    const freq = (entering ? 140 : 170) * rate;
     this.tone({ t, dur: 0.09, peak: 0.3 * gain, attack: 0.002, type: 'sine', freq, freqEnd: freq * 0.5 });
     this.noiseBurst({ t: t + 0.01, dur: 0.05, peak: 0.12 * gain, type: 'bandpass', freq: 900, q: 4 });
   }
 
   private playCrash(gain: number): void {
     const t = this.ctx!.currentTime;
-    if (this.playSample('crash-metal', 0.8 * gain, { rate: 0.9 + Math.random() * 0.2 })) return;
+    // 3 randomized variants: random sample pick + rate jitter.
+    const pick = CRASH_SAMPLES[Math.floor(Math.random() * CRASH_SAMPLES.length)];
+    if (this.playSample(pick, 0.8 * gain, { rate: 0.85 + Math.random() * 0.3 })) return;
     if (!this.claimVoice(0.3)) return;
-    // Metallic crunch: two resonant noise bands + low impact.
-    this.noiseBurst({ t, dur: 0.25, peak: 0.45 * gain, type: 'bandpass', freq: 2200, freqEnd: 800, q: 1.8 });
-    this.noiseBurst({ t, dur: 0.2, peak: 0.4 * gain, type: 'bandpass', freq: 600, freqEnd: 250, q: 1.2 });
+    // Metallic crunch: two resonant noise bands + low impact. Randomize the
+    // band centers so synth crashes vary too.
+    const f = 0.85 + Math.random() * 0.3;
+    this.noiseBurst({ t, dur: 0.25, peak: 0.45 * gain, type: 'bandpass', freq: 2200 * f, freqEnd: 800 * f, q: 1.8 });
+    this.noiseBurst({ t, dur: 0.2, peak: 0.4 * gain, type: 'bandpass', freq: 600 * f, freqEnd: 250 * f, q: 1.2 });
     this.tone({ t, dur: 0.12, peak: 0.3 * gain, attack: 0.002, type: 'sine', freq: 90, freqEnd: 45 });
   }
 
   private playExplosion(gain: number): void {
     const t = this.ctx!.currentTime;
+    // Delayed debris: a quieter crackle/rattle shortly after the main blast.
+    const debrisT = t + 0.28 + Math.random() * 0.12;
+    this.noiseBurst({ t: debrisT, dur: 0.35, peak: 0.16 * gain, attack: 0.01, type: 'bandpass', freq: 1700, freqEnd: 450, q: 2.2 });
+    this.noiseBurst({ t: debrisT + 0.07, dur: 0.22, peak: 0.1 * gain, attack: 0.01, type: 'bandpass', freq: 900, freqEnd: 300, q: 1.6 });
     if (this.playSample('explosion-crunch', 0.9 * gain)) {
       // Layer a sub-bass thump under the crunch when available.
       this.playSample('explosion-low', 0.7 * gain);
@@ -456,6 +669,43 @@ export class AudioManager {
     // Big low boom with long decay + sub sine drop.
     this.noiseBurst({ t, dur: 1.1, peak: 0.9 * gain, attack: 0.005, type: 'lowpass', freq: 900, freqEnd: 80, q: 1 });
     this.tone({ t, dur: 0.8, peak: 0.6 * gain, attack: 0.005, type: 'sine', freq: 130, freqEnd: 30 });
+  }
+
+  /** Molotov hit: glass shatter + fire ignition whoosh. */
+  private playMolotovSmash(gain: number): void {
+    const t = this.ctx!.currentTime;
+    // Ignition whoosh (always synth): rising airy noise that blooms into fire.
+    this.noiseBurst({ t: t + 0.04, dur: 0.5, peak: 0.3 * gain, attack: 0.06, type: 'bandpass', freq: 500, freqEnd: 1600, q: 0.7 });
+    this.noiseBurst({ t: t + 0.1, dur: 0.45, peak: 0.18 * gain, attack: 0.08, type: 'lowpass', freq: 700, freqEnd: 250, q: 1 });
+    if (this.playSample('glass-shatter', 0.7 * gain, { rate: 0.95 + Math.random() * 0.1 })) return;
+    if (!this.claimVoice(0.3)) return;
+    // Synth glass: bright resonant shards.
+    this.noiseBurst({ t, dur: 0.18, peak: 0.4 * gain, attack: 0.001, type: 'highpass', freq: 3500, q: 1.5 });
+    this.noiseBurst({ t: t + 0.03, dur: 0.22, peak: 0.25 * gain, attack: 0.001, type: 'bandpass', freq: 5200, freqEnd: 2800, q: 3 });
+  }
+
+  /** Short tire screech, volume scaled by intensity 0..1. */
+  private playSkid(gain: number, intensity: number): void {
+    const t = this.ctx!.currentTime;
+    if (intensity <= 0.02) return;
+    const dur = 0.25 + 0.2 * intensity;
+    if (!this.claimVoice(dur)) return;
+    // Falling resonant bandpass over noise reads as rubber losing grip.
+    const start = 1900 + Math.random() * 500;
+    this.noiseBurst({ t, dur, peak: 0.32 * gain * intensity, attack: 0.02, type: 'bandpass', freq: start, freqEnd: start * 0.42, q: 7 });
+    // Faint broadband scrub underneath keeps it from sounding like a whistle.
+    this.noiseBurst({ t, dur: dur * 0.8, peak: 0.08 * gain * intensity, attack: 0.02, type: 'highpass', freq: 900, q: 0.7 });
+  }
+
+  /** Car horn beep with a little random pitch. */
+  private playHorn(gain: number): void {
+    const t = this.ctx!.currentTime;
+    const rate = 0.92 + Math.random() * 0.16;
+    if (this.playSample('horn', 0.55 * gain, { rate })) return;
+    if (!this.claimVoice(0.3)) return;
+    // Synth fallback: two-tone square stab (classic dual-horn interval).
+    this.tone({ t, dur: 0.28, peak: 0.14 * gain, attack: 0.01, type: 'square', freq: 370 * rate });
+    this.tone({ t, dur: 0.28, peak: 0.12 * gain, attack: 0.01, type: 'square', freq: 466 * rate });
   }
 
   private playPickup(gain: number): void {
@@ -548,5 +798,108 @@ export class AudioManager {
     this.engineLfo = lfo;
     this.engineFilter = filter;
     this.engineGain = gain;
+  }
+
+  // ----- continuous synth loops --------------------------------------------
+
+  /** Start a looping buffer source through a filter into `out`. */
+  private loopSource(
+    ctx: AudioContext,
+    buf: AudioBuffer,
+    out: AudioNode,
+    opts: { type: BiquadFilterType; freq: number; q?: number; level: number; rate?: number },
+  ): void {
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    if (opts.rate !== undefined) src.playbackRate.value = opts.rate;
+    // Random start phase so two loops from the same buffer don't correlate.
+    const filter = ctx.createBiquadFilter();
+    filter.type = opts.type;
+    filter.frequency.value = opts.freq;
+    filter.Q.value = opts.q ?? 1;
+    const g = ctx.createGain();
+    g.gain.value = opts.level;
+    src.connect(filter);
+    filter.connect(g);
+    g.connect(out);
+    src.start(0, Math.random() * buf.duration);
+  }
+
+  /** Flicker stage: unity gain wobbled by an LFO, feeding the loop's fader. */
+  private flickerStage(ctx: AudioContext, out: AudioNode, rateHz: number, depth: number): GainNode {
+    const stage = ctx.createGain();
+    stage.gain.value = 1;
+    const lfo = ctx.createOscillator();
+    lfo.type = 'sine';
+    lfo.frequency.value = rateHz;
+    const lfoGain = ctx.createGain();
+    lfoGain.gain.value = depth;
+    lfo.connect(lfoGain);
+    lfoGain.connect(stage.gain);
+    lfo.start();
+    stage.connect(out);
+    return stage;
+  }
+
+  /** Roaring flame jet: mid-low rumble + hiss, with fast flicker. */
+  private createFlameLoop(ctx: AudioContext): LoopVoice {
+    const fader = ctx.createGain();
+    fader.gain.value = 0;
+    fader.connect(this.master!);
+    const flicker = this.flickerStage(ctx, fader, 13, 0.22);
+    this.loopSource(ctx, this.brownNoiseBuffer!, flicker, { type: 'lowpass', freq: 320, q: 0.8, level: 0.9 }); // rumble
+    this.loopSource(ctx, this.noiseBuffer!, flicker, { type: 'bandpass', freq: 2300, q: 0.6, level: 0.28 }); // jet hiss
+    this.loopSource(ctx, this.crackleSlow!, flicker, { type: 'bandpass', freq: 1500, q: 1, level: 0.35, rate: 1.3 }); // spitting
+    return { gain: fader };
+  }
+
+  /** Electric crackle/buzz: gritty square hum + dense fizz. */
+  private createElectroLoop(ctx: AudioContext): LoopVoice {
+    const fader = ctx.createGain();
+    fader.gain.value = 0;
+    fader.connect(this.master!);
+    const flicker = this.flickerStage(ctx, fader, 28, 0.3);
+    // Mains-style buzz: two slightly detuned squares through a peaky bandpass.
+    for (const freq of [110, 113.3]) {
+      const osc = ctx.createOscillator();
+      osc.type = 'square';
+      osc.frequency.value = freq;
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.value = 750;
+      filter.Q.value = 1.6;
+      const g = ctx.createGain();
+      g.gain.value = 0.16;
+      osc.connect(filter);
+      filter.connect(g);
+      g.connect(flicker);
+      osc.start();
+    }
+    this.loopSource(ctx, this.crackleFast!, flicker, { type: 'highpass', freq: 2400, q: 0.8, level: 0.85, rate: 1.1 }); // arcing fizz
+    return { gain: fader };
+  }
+
+  /** Burning fire near the player: slow crackle pops over a soft low roar. */
+  private createFireLoop(ctx: AudioContext): LoopVoice {
+    const fader = ctx.createGain();
+    fader.gain.value = 0;
+    fader.connect(this.master!);
+    const flicker = this.flickerStage(ctx, fader, 5, 0.25);
+    this.loopSource(ctx, this.brownNoiseBuffer!, flicker, { type: 'lowpass', freq: 260, q: 0.7, level: 0.55 }); // low roar
+    this.loopSource(ctx, this.crackleSlow!, flicker, { type: 'bandpass', freq: 1900, q: 1.2, level: 0.8, rate: 0.85 }); // pops
+    this.loopSource(ctx, this.crackleSlow!, flicker, { type: 'highpass', freq: 3800, q: 0.7, level: 0.3, rate: 1.6 }); // fine sizzle
+    return { gain: fader };
+  }
+
+  /** Barely-audible city bed: low brown-noise wind/rumble, slowly breathing. */
+  private createAmbienceLoop(ctx: AudioContext): LoopVoice {
+    const fader = ctx.createGain();
+    fader.gain.value = 0;
+    fader.connect(this.master!);
+    const breathe = this.flickerStage(ctx, fader, 0.07, 0.3);
+    this.loopSource(ctx, this.brownNoiseBuffer!, breathe, { type: 'lowpass', freq: 190, q: 0.5, level: 0.9 }); // wind/rumble
+    this.loopSource(ctx, this.noiseBuffer!, breathe, { type: 'bandpass', freq: 950, q: 0.4, level: 0.018 }); // distant hiss
+    return { gain: fader };
   }
 }

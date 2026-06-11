@@ -35,19 +35,32 @@ const QA = new THREE.Quaternion();
 const QB = new THREE.Quaternion();
 
 export interface FxSpawn {
-  kind: 'muzzle' | 'blood' | 'bloodspray' | 'explosion' | 'smoke' | 'spark' | 'dust' | 'fire';
+  kind: 'muzzle' | 'blood' | 'bloodspray' | 'explosion' | 'smoke' | 'spark' | 'dust' | 'fire' | 'electro';
   x: number;
   y: number;
   z: number;
 }
 
+export type TracerKind = 'bullet' | 'rocket' | 'grenade' | 'molotov' | 'flame';
+
 export interface TracerInfo {
   id: number;
+  kind: TracerKind;
   x: number;
   y: number;
   z: number;
   angle: number;
+  /** 0..1 age fraction, used to scale flame puffs as they fly */
+  age?: number;
 }
+
+const TRACER_STYLE: Record<TracerKind, { w: number; h: number }> = {
+  bullet: { w: 0.045, h: 0.34 },
+  rocket: { w: 0.12, h: 0.5 },
+  grenade: { w: 0.09, h: 0.09 },
+  molotov: { w: 0.1, h: 0.16 },
+  flame: { w: 0.3, h: 0.3 },
+};
 
 interface Effect {
   mesh: THREE.Mesh;
@@ -73,8 +86,8 @@ export class CityRenderer {
   private entityMeshes = new Map<string, { mesh: THREE.Mesh; sprite: number; remap?: number; tint?: number }>();
   private effects: Effect[] = [];
   private decals: THREE.Mesh[] = [];
-  private tracerMeshes = new Map<number, THREE.Mesh>();
-  private tracerTex: THREE.Texture | null = null;
+  private tracerMeshes = new Map<number, { mesh: THREE.Mesh; kind: TracerKind }>();
+  private tracerTex = new Map<TracerKind, THREE.Texture>();
   private eye = EYE_FOOT;
   private shake = 0;
   private leadX = 0;
@@ -269,6 +282,11 @@ export class CityRenderer {
         grad.addColorStop(0.6, 'rgba(150,15,15,0.8)');
         grad.addColorStop(1, 'rgba(120,10,10,0)');
         break;
+      case 'electro':
+        grad.addColorStop(0, 'rgba(240,250,255,1)');
+        grad.addColorStop(0.4, 'rgba(120,180,255,0.95)');
+        grad.addColorStop(1, 'rgba(60,90,255,0)');
+        break;
       case 'blood':
         grad.addColorStop(0, 'rgba(150,15,15,0.95)');
         grad.addColorStop(0.7, 'rgba(120,10,10,0.7)');
@@ -341,46 +359,119 @@ export class CityRenderer {
     this.addEffect(fx, fx.kind, ttl, { size, grow: fx.kind === 'smoke' ? 1.5 : fx.kind === 'dust' ? 1.8 : 0.4 });
   }
 
-  /** Sync visible bullet tracers (thin bright streaks) to the sim's bullets. */
-  syncTracers(tracers: TracerInfo[]): void {
-    if (!this.tracerTex) {
-      const c = document.createElement('canvas');
-      c.width = 8;
-      c.height = 32;
-      const ctx = c.getContext('2d')!;
-      // bright head at canvas bottom = the end that leads (art faces
-      // image-bottom, like all sprites here); the tail fades out behind
-      const grad = ctx.createLinearGradient(0, 0, 0, 32);
-      grad.addColorStop(0, 'rgba(255,180,60,0)');
-      grad.addColorStop(0.5, 'rgba(255,230,150,0.9)');
-      grad.addColorStop(1, 'rgba(255,255,240,1)');
-      ctx.fillStyle = grad;
-      ctx.fillRect(0, 0, 8, 32);
-      this.tracerTex = new THREE.CanvasTexture(c);
+  private tracerTexture(kind: TracerKind): THREE.Texture {
+    let tex = this.tracerTex.get(kind);
+    if (tex) return tex;
+    const c = document.createElement('canvas');
+    c.width = 16;
+    c.height = 32;
+    const ctx = c.getContext('2d')!;
+    switch (kind) {
+      case 'bullet':
+      case 'rocket': {
+        // bright head at canvas bottom = the leading end (art faces
+        // image-bottom, like all sprites here); the tail fades out behind
+        const grad = ctx.createLinearGradient(0, 0, 0, 32);
+        grad.addColorStop(0, kind === 'rocket' ? 'rgba(255,120,20,0)' : 'rgba(255,180,60,0)');
+        grad.addColorStop(0.5, 'rgba(255,230,150,0.9)');
+        grad.addColorStop(1, 'rgba(255,255,240,1)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(4, 0, 8, 32);
+        break;
+      }
+      case 'grenade':
+        ctx.fillStyle = '#28321e';
+        ctx.beginPath();
+        ctx.arc(8, 16, 6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#46543a';
+        ctx.beginPath();
+        ctx.arc(6, 14, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+        break;
+      case 'molotov': {
+        ctx.fillStyle = '#3f7a4a';
+        ctx.fillRect(5, 8, 6, 18);
+        ctx.fillStyle = '#ffba30';
+        ctx.beginPath();
+        ctx.arc(8, 5, 4, 0, Math.PI * 2);
+        ctx.fill();
+        break;
+      }
+      case 'flame': {
+        const grad = ctx.createRadialGradient(8, 16, 1, 8, 16, 8);
+        grad.addColorStop(0, 'rgba(255,245,190,1)');
+        grad.addColorStop(0.5, 'rgba(255,150,30,0.9)');
+        grad.addColorStop(1, 'rgba(220,60,0,0)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, 16, 32);
+        break;
+      }
     }
+    tex = new THREE.CanvasTexture(c);
+    this.tracerTex.set(kind, tex);
+    return tex;
+  }
+
+  /** Sync projectile meshes (bullets, rockets, grenades, flames) to the sim. */
+  syncTracers(tracers: TracerInfo[]): void {
     const seen = new Set<number>();
     for (const t of tracers) {
       seen.add(t.id);
-      let mesh = this.tracerMeshes.get(t.id);
-      if (!mesh) {
-        const geo = new THREE.PlaneGeometry(0.045, 0.34);
-        const mat = new THREE.MeshBasicMaterial({
-          map: this.tracerTex, transparent: true, depthWrite: false,
-        });
-        mesh = new THREE.Mesh(geo, mat);
-        this.scene.add(mesh);
-        this.tracerMeshes.set(t.id, mesh);
+      let rec = this.tracerMeshes.get(t.id);
+      if (rec && rec.kind !== t.kind) {
+        this.scene.remove(rec.mesh);
+        rec.mesh.geometry.dispose();
+        rec = undefined;
+        this.tracerMeshes.delete(t.id);
       }
-      mesh.position.set(t.x, -t.y, t.z);
-      // streak tip at image-top; same orientation convention as sprites
-      mesh.rotation.z = -t.angle + Math.PI / 2;
+      if (!rec) {
+        const style = TRACER_STYLE[t.kind];
+        const geo = new THREE.PlaneGeometry(style.w, style.h);
+        const mat = new THREE.MeshBasicMaterial({
+          map: this.tracerTexture(t.kind), transparent: true, depthWrite: false,
+        });
+        const mesh = new THREE.Mesh(geo, mat);
+        this.scene.add(mesh);
+        rec = { mesh, kind: t.kind };
+        this.tracerMeshes.set(t.id, rec);
+      }
+      rec.mesh.position.set(t.x, -t.y, t.z);
+      rec.mesh.rotation.z = -t.angle + Math.PI / 2;
+      if (t.kind === 'flame') {
+        const s = 0.5 + (t.age ?? 0) * 1.6; // flames swell as they fly
+        rec.mesh.scale.set(s, s, 1);
+        (rec.mesh.material as THREE.MeshBasicMaterial).opacity = 1 - (t.age ?? 0) * 0.6;
+      }
     }
-    for (const [id, mesh] of this.tracerMeshes) {
+    for (const [id, rec] of this.tracerMeshes) {
       if (!seen.has(id)) {
-        this.scene.remove(mesh);
-        mesh.geometry.dispose();
+        this.scene.remove(rec.mesh);
+        rec.mesh.geometry.dispose();
         this.tracerMeshes.delete(id);
       }
+    }
+  }
+
+  /** Jagged ElectroGun beam: short-lived sparks scattered along the ray. */
+  drawBeam(x0: number, y0: number, x1: number, y1: number, z: number): void {
+    const len = Math.hypot(x1 - x0, y1 - y0);
+    const n = Math.max(3, Math.floor(len / 0.22));
+    const px = -(y1 - y0) / (len || 1);
+    const py = (x1 - x0) / (len || 1);
+    for (let i = 0; i <= n; i++) {
+      const f = i / n;
+      const jitter = (Math.random() - 0.5) * 0.16;
+      this.addEffect(
+        {
+          x: x0 + (x1 - x0) * f + px * jitter,
+          y: y0 + (y1 - y0) * f + py * jitter,
+          z,
+        },
+        'electro',
+        0.09,
+        { size: 0.12 + Math.random() * 0.08 },
+      );
     }
   }
 

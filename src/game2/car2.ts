@@ -77,6 +77,32 @@ export class Car2 {
     return Math.hypot(this.vel.x, this.vel.y);
   }
 
+  /** Is world point (x, y) inside the car's oriented box, inflated by r? */
+  containsPoint(x: number, y: number, r = 0): boolean {
+    const c = Math.cos(this.heading);
+    const s = Math.sin(this.heading);
+    const dx = x - this.pos.x;
+    const dy = y - this.pos.y;
+    const lx = dx * c + dy * s;
+    const ly = -dx * s + dy * c;
+    return Math.abs(lx) < this.length / 2 + r && Math.abs(ly) < this.width / 2 + r;
+  }
+
+  /**
+   * Two-circle collision model: front and rear circles of radius ~half the
+   * car's width, spaced along the heading. Far better fit than one circle.
+   */
+  collisionCircles(): { x: number; y: number; r: number }[] {
+    const c = Math.cos(this.heading);
+    const s = Math.sin(this.heading);
+    const r = this.width * 0.55;
+    const off = Math.max(0, this.length / 2 - r);
+    return [
+      { x: this.pos.x + c * off, y: this.pos.y + s * off, r },
+      { x: this.pos.x - c * off, y: this.pos.y - s * off, r },
+    ];
+  }
+
   corners(): Vec2[] {
     const c = Math.cos(this.heading);
     const s = Math.sin(this.heading);
@@ -133,6 +159,11 @@ export class Car2 {
 
     const grip = handbrake ? h.grip * 0.22 : h.grip;
     lat -= lat * Math.min(1, grip * dt);
+
+    // Tires squeal when sliding sideways or handbraking at speed.
+    if (this.driver && Math.abs(lat) > 0.9 && Math.abs(fwd) > 1.2) {
+      emit({ type: 'skid', pos: { ...this.pos }, intensity: Math.min(1, Math.abs(lat) / 3) });
+    }
 
     const speedFactor = Math.min(1, Math.abs(fwd) / 1.2);
     const dir = fwd >= 0 ? 1 : -1;
