@@ -1,0 +1,167 @@
+#!/usr/bin/env node
+// Decode GTA2 SDT/RAW sound-bank entries to WAV files for human listening and
+// produce a heuristic classification table (gamedata/audio/INDEX.md).
+//
+// Usage:
+//   node scripts/sound-preview.mjs                 # classify all banks, write INDEX.md,
+//                                                  # export first 40 bil entries as WAVs
+//   node scripts/sound-preview.mjs bil 0 320       # export bil entries [0..320) as WAVs
+//   node scripts/sound-preview.mjs fstyle all      # export every fstyle entry
+//
+// WAVs land in /tmp/sdt-preview/<bank>-<index>.wav (mono 16-bit PCM).
+
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const AUDIO = join(ROOT, 'gamedata', 'audio');
+const OUT = '/tmp/sdt-preview';
+const RECORD = 24;
+const BANKS = ['bil', 'ste', 'wil', 'fstyle'];
+
+function loadBank(name) {
+  const sdt = readFileSync(join(AUDIO, `${name}.sdt`));
+  const raw = readFileSync(join(AUDIO, `${name}.raw`));
+  const entries = [];
+  for (let i = 0; i * RECORD < sdt.length; i++) {
+    entries.push({
+      offset: sdt.readInt32LE(i * RECORD),
+      size: sdt.readInt32LE(i * RECORD + 4),
+      rate: sdt.readInt32LE(i * RECORD + 8),
+      pitchVar: sdt.readInt32LE(i * RECORD + 12),
+      loopStart: sdt.readInt32LE(i * RECORD + 16),
+      loopEnd: sdt.readInt32LE(i * RECORD + 20),
+    });
+  }
+  return { name, entries, raw };
+}
+
+function pcm(bank, i) {
+  const e = bank.entries[i];
+  const frames = e.size >> 1;
+  const out = new Int16Array(frames);
+  for (let j = 0; j < frames; j++) out[j] = bank.raw.readInt16LE(e.offset + j * 2);
+  return out;
+}
+
+function wav(samples, rate) {
+  const dataLen = samples.length * 2;
+  const buf = Buffer.alloc(44 + dataLen);
+  buf.write('RIFF', 0);
+  buf.writeUInt32LE(36 + dataLen, 4);
+  buf.write('WAVE', 8);
+  buf.write('fmt ', 12);
+  buf.writeUInt32LE(16, 16); // fmt chunk size
+  buf.writeUInt16LE(1, 20); // PCM
+  buf.writeUInt16LE(1, 22); // mono
+  buf.writeUInt32LE(rate, 24);
+  buf.writeUInt32LE(rate * 2, 28); // byte rate
+  buf.writeUInt16LE(2, 32); // block align
+  buf.writeUInt16LE(16, 34); // bits per sample
+  buf.write('data', 36);
+  buf.writeUInt32LE(dataLen, 40);
+  for (let i = 0; i < samples.length; i++) buf.writeInt16LE(samples[i], 44 + i * 2);
+  return buf;
+}
+
+function analyze(samples, rate, entry) {
+  const n = samples.length;
+  if (n === 0) return { dur: 0, character: 'empty' };
+  let peak = 0, sumAbs = 0, zc = 0;
+  for (let i = 0; i < n; i++) {
+    const a = Math.abs(samples[i]);
+    if (a > peak) peak = a;
+    sumAbs += a;
+    if (i > 0 && (samples[i] ^ samples[i - 1]) < 0) zc++;
+  }
+  const meanAbs = sumAbs / n;
+  const dur = n / rate;
+  const pitchHz = ((zc / n) * rate) / 2; // crude dominant-frequency estimate
+
+  // 16-segment loudness envelope (normalized RMS)
+  const SEG = 16;
+  const env = new Array(SEG).fill(0);
+  for (let s = 0; s < SEG; s++) {
+    const a = Math.floor((s * n) / SEG), b = Math.floor(((s + 1) * n) / SEG);
+    let acc = 0;
+    for (let i = a; i < b; i++) acc += samples[i] * samples[i];
+    env[s] = Math.sqrt(acc / Math.max(1, b - a));
+  }
+  const envPeak = Math.max(...env, 1);
+  const norm = env.map((x) => x / envPeak);
+  const peakSeg = norm.indexOf(1);
+  const sustain = norm.filter((x) => x > 0.5).length / SEG; // fraction of time near peak loudness
+  const tailLevel = (norm[SEG - 1] + norm[SEG - 2]) / 2;
+
+  let shape;
+  if (peakSeg <= 2 && tailLevel < 0.25 && sustain < 0.4) shape = 'percussive';
+  else if (sustain > 0.7) shape = 'sustained';
+  else if (tailLevel < 0.3) shape = 'decaying';
+  else shape = 'varying';
+
+  const len = dur < 0.35 ? 'short' : dur < 1.5 ? 'medium' : 'long';
+  const tone = pitchHz < 700 ? 'low/tonal' : pitchHz < 2500 ? 'mid' : 'noisy/bright';
+  const loud = peak > 25000 ? 'loud' : peak > 8000 ? 'normal' : 'quiet';
+  const loop = entry.loopStart !== 0 ? ' looping' : '';
+  return {
+    dur, peak, meanAbs, pitchHz, shape,
+    character: `${len} ${shape} ${tone} ${loud}${loop}`,
+  };
+}
+
+function classifyBank(bank) {
+  const rows = [];
+  for (let i = 0; i < bank.entries.length; i++) {
+    const e = bank.entries[i];
+    const a = analyze(pcm(bank, i), e.rate, e);
+    rows.push(
+      `| ${i} | ${a.dur.toFixed(2)}s | ${e.rate} | ${Math.round(a.pitchHz)} | ${a.peak} | ` +
+        `${e.pitchVar} | ${e.loopStart !== 0 ? e.loopStart : ''} | ${a.character} |`,
+    );
+  }
+  return rows;
+}
+
+// ---- main -------------------------------------------------------------
+
+mkdirSync(OUT, { recursive: true });
+const [bankArg, fromArg, toArg] = process.argv.slice(2);
+
+// 1. INDEX.md with heuristic classification for every bank
+const md = [
+  '# GTA2 sound bank index (heuristic classification)',
+  '',
+  'Generated by `node scripts/sound-preview.mjs`. Duration/pitch/envelope are',
+  'computed from the PCM; "character" is a heuristic label, not ground truth.',
+  'Definitive sample-id assignments (from the gta2_re decompilation) live in',
+  '`src/audio/gta2-sfx.ts`.',
+  '',
+];
+for (const name of BANKS) {
+  if (!existsSync(join(AUDIO, `${name}.sdt`))) continue;
+  const bank = loadBank(name);
+  md.push(`## ${name} (${bank.entries.length} entries)`, '');
+  md.push('| idx | dur | rate | ~pitch Hz | peak | pitchVar | loopStart | character |');
+  md.push('|----:|----:|-----:|----------:|-----:|---------:|----------:|-----------|');
+  md.push(...classifyBank(bank));
+  md.push('');
+}
+writeFileSync(join(AUDIO, 'INDEX.md'), md.join('\n'));
+console.log(`wrote ${join(AUDIO, 'INDEX.md')}`);
+
+// 2. WAV export for listening
+const bankName = bankArg ?? 'bil';
+const bank = loadBank(bankName);
+const from = fromArg === 'all' ? 0 : Number(fromArg ?? 0);
+const to = fromArg === 'all' || toArg === undefined
+  ? (fromArg === 'all' ? bank.entries.length : Math.min(from + 40, bank.entries.length))
+  : Math.min(Number(toArg), bank.entries.length);
+let written = 0;
+for (let i = from; i < to; i++) {
+  const e = bank.entries[i];
+  if (e.size < 4) continue;
+  writeFileSync(join(OUT, `${bankName}-${String(i).padStart(3, '0')}.wav`), wav(pcm(bank, i), e.rate));
+  written++;
+}
+console.log(`wrote ${written} WAVs (${bankName} ${from}..${to - 1}) to ${OUT}`);
