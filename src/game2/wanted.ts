@@ -1,50 +1,49 @@
 /**
- * Wanted-level ("heat") tracking, GTA2 style: crimes add heat, heat maps to
- * 0-6 cop heads, and it cools off slowly while the player behaves.
+ * Wanted-level ("heat") tracking with the original GTA2 numbers
+ * (docs/gta2-reference.md §3, from the gta2_re decompilation):
  *
- * PROVISIONAL constants — to be reconciled with docs/gta2-reference.md
- * (gta2_re research) when the exact values are confirmed.
+ *  - heat is 0..12000 points
+ *  - star thresholds: 600 / 1600 / 3000 / 5000 / 8000 / 12000
+ *  - kill ped +100, kill cop +500, destroy car +200 (but jumps to at least
+ *    600 — one star — if below), jacking/ramming cops bumps to at least 600
+ *  - NO passive decay: heat only resets on death, arrest, or respray
  */
 
 export const HEAT_PER = {
-  pedKilled: 6,
-  carDestroyed: 12,
-  copKilled: 40,
-  copCarDestroyed: 30,
-  copHit: 3,
+  pedKilled: 100,
+  copKilled: 500,
+  carDestroyed: 200,
+  copCarDestroyed: 500,
 };
 
-const LEVEL_THRESHOLDS = [0, 10, 30, 60, 100, 160, 240]; // heat → heads 0..6
-const DECAY_PER_S = 1.2;
-const DECAY_DELAY_S = 6; // no cooling right after a crime
+/** crimes that immediately guarantee at least one star */
+export const HEAT_MIN_STAR = 600;
+
+const LEVEL_THRESHOLDS = [600, 1600, 3000, 5000, 8000, 12000];
+const HEAT_CAP = 12000;
 
 export class Wanted {
   heat = 0;
-  private sinceCrime = Infinity;
 
-  add(amount: number): void {
-    this.heat = Math.min(400, this.heat + amount);
-    this.sinceCrime = 0;
+  add(amount: number, minStar = false): void {
+    this.heat = Math.min(HEAT_CAP, this.heat + amount);
+    if (minStar && this.heat < HEAT_MIN_STAR) this.heat = HEAT_MIN_STAR;
   }
 
-  update(dt: number): void {
-    this.sinceCrime += dt;
-    if (this.sinceCrime > DECAY_DELAY_S && this.heat > 0) {
-      this.heat = Math.max(0, this.heat - DECAY_PER_S * dt);
-    }
+  update(_dt: number): void {
+    // authentic: no passive cool-off
   }
 
   /** 0-6 cop heads. */
   get level(): number {
     let lvl = 0;
-    for (let i = 1; i < LEVEL_THRESHOLDS.length; i++) {
-      if (this.heat >= LEVEL_THRESHOLDS[i]) lvl = i;
+    for (let i = 0; i < LEVEL_THRESHOLDS.length; i++) {
+      if (this.heat >= LEVEL_THRESHOLDS[i]) lvl = i + 1;
     }
     return lvl;
   }
 
   clear(): void {
     this.heat = 0;
-    this.sinceCrime = Infinity;
   }
 }

@@ -30,6 +30,10 @@ function available(a: ArrowDirs): DirName[] {
  */
 export class TrafficAI {
   readonly car: Car2;
+  /** chase bias: when set, junction choices steer toward this point */
+  pursue: Vec2 | null = null;
+  /** cruise speed (blocks/s); pursuits drive harder than traffic */
+  cruise = CRUISE_SPEED;
   private dir: DirName;
   private target: Vec2 | null = null;
 
@@ -76,9 +80,9 @@ export class TrafficAI {
     }
 
     const sharpTurn = Math.abs(diff) > 0.6 && car.forwardSpeed() > 1.2;
-    const tooFast = car.forwardSpeed() > CRUISE_SPEED;
+    const tooFast = car.forwardSpeed() > this.cruise;
     car.controls = {
-      throttle: blocked ? -1 : tooFast || sharpTurn ? 0 : 0.6,
+      throttle: blocked ? -1 : tooFast || sharpTurn ? 0 : this.pursue ? 0.85 : 0.6,
       steer,
       handbrake: false,
     };
@@ -96,7 +100,24 @@ export class TrafficAI {
         return;
       }
     }
-    const next = dirs.includes(this.dir) && rng.chance(0.65) ? this.dir : rng.pick(dirs);
+    let next: DirName;
+    if (this.pursue) {
+      // junction choice biased toward the quarry
+      const px = this.pursue.x - (bx + 0.5);
+      const py = this.pursue.y - (by + 0.5);
+      next = dirs[0];
+      let bestDot = -Infinity;
+      for (const d of dirs) {
+        const v = DIR_VEC[d];
+        const dot = v.x * px + v.y * py;
+        if (dot > bestDot) {
+          bestDot = dot;
+          next = d;
+        }
+      }
+    } else {
+      next = dirs.includes(this.dir) && rng.chance(0.65) ? this.dir : rng.pick(dirs);
+    }
     this.dir = next;
     const v = DIR_VEC[next];
     this.target = { x: bx + v.x + 0.5, y: by + v.y + 0.5 };

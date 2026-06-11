@@ -1,4 +1,6 @@
 import type { GameEvent, Vec2, WeaponId } from '../sim/types';
+import type { Gta2Bank } from './gta2bank';
+import { SFX } from './gta2-sfx';
 
 /** Distance (world units) beyond which one-shot events are inaudible. */
 const AUDIBLE_RADIUS = 600;
@@ -15,6 +17,15 @@ const CRASH_REF_SPEED = 200;
 /** Engine loop playbackRate range driven by speedRatio. */
 const ENGINE_RATE_MIN = 0.6;
 const ENGINE_RATE_MAX = 1.6;
+/** GTA2 bank engine sample playbackRate range (idle → full speed). */
+const BANK_ENGINE_RATE_MIN = 0.75;
+const BANK_ENGINE_RATE_MAX = 1.5;
+/** Crash speed at/above which the heavy bank impact (13) is used. */
+const CRASH_HEAVY_SPEED = 120;
+/** Crash speed at/above which an extra crunch layer (43-48) is added. */
+const CRASH_CRUNCH_SPEED = 70;
+/** Minimum spacing between footstep one-shots (seconds). */
+const FOOTSTEP_RATE_LIMIT_S = 0.25;
 
 /**
  * Weapon ids this layer understands. The sim's WeaponId union is converging on
@@ -106,6 +117,15 @@ export class AudioManager {
   private samples = new Map<SampleName, AudioBuffer>();
   private samplesRequested = false;
 
+  /**
+   * Original GTA2 sound bank (attachBank). When present, one-shots and loops
+   * prefer bank samples; CC0/synth paths remain the fallback for any missing
+   * entry (or when no bank is attached at all).
+   */
+  private bank: Gta2Bank | null = null;
+  /** Bank engine sample id (3-8) selected via setEngineClass; null = CC0/synth. */
+  private engineBankClass: number | null = null;
+
   // Synth engine loop nodes (fallback; created lazily on first setEngine(true)).
   private engineOsc: OscillatorNode | null = null;
   private engineLfo: OscillatorNode | null = null;
@@ -115,12 +135,22 @@ export class AudioManager {
   // Sample engine loop nodes (used once the engine-loop sample has decoded).
   private engineSrc: AudioBufferSourceNode | null = null;
   private engineSrcGain: GainNode | null = null;
+  /** Which sample the running engineSrc plays: 'cc0' or 'bank:<idx>'. */
+  private engineSrcKey: string | null = null;
 
   // Continuous synth loops (created lazily on first activation).
   private flameLoop: LoopVoice | null = null;
   private electroLoop: LoopVoice | null = null;
   private fireLoop: LoopVoice | null = null;
   private ambienceLoop: LoopVoice | null = null;
+  private sirenLoop: LoopVoice | null = null;
+
+  /** Gain level applied to the siren loop fader (bank sample vs synth differ). */
+  private sirenLevel = 0.14;
+
+  /** Crowd chatter (setCrowd): current intensity and next scheduled chatter time. */
+  private crowdIntensity = 0;
+  private nextChatterAt = 0;
 
   /** End times (ctx time) of currently-playing one-shot voices. */
   private voiceEnds: number[] = [];
@@ -155,6 +185,33 @@ export class AudioManager {
     if (this.ctx && this.master) {
       // Smooth ramp; never an abrupt value change.
       this.master.gain.setTargetAtTime(on ? MASTER_LEVEL : 0, this.ctx.currentTime, 0.02);
+    }
+  }
+
+  /**
+   * Attach (or detach with null) the original GTA2 sound bank. Once attached,
+   * one-shots and loops prefer the bank samples (see src/audio/gta2-sfx.ts
+   * for the id table); the CC0/synth paths stay as fallback for any entry the
+   * bank does not provide. Typed `unknown` so callers without the gta2bank
+   * module in scope can pass the bank through opaquely.
+   */
+  /** The manager's AudioContext (for building bank AudioBuffers); null before init(). */
+  get audioContext(): AudioContext | null {
+    return this.ctx;
+  }
+
+  attachBank(bank: unknown | null): void {
+    this.bank = (bank as Gta2Bank | null) ?? null;
+    // Drop any live loops built from the previous source so they get rebuilt
+    // from the new one (bank siren vs synth siren, bank engine vs CC0/synth).
+    if (this.ctx) {
+      const t = this.ctx.currentTime;
+      if (this.sirenLoop) {
+        this.sirenLoop.gain.gain.setTargetAtTime(0, t, 0.1);
+        this.sirenLoop = null;
+        this.sirenLevel = 0.14;
+      }
+      if (this.engineSrc) this.stopEngineSample(t);
     }
   }
 
@@ -203,7 +260,7 @@ export class AudioManager {
           this.playShot(ev.weapon, gain);
           break;
         case 'hit':
-          this.playHit(gain);
+          this.playHit(gain, ev.surface);
           break;
         case 'ped_killed':
         case 'ped_scream':
@@ -219,7 +276,7 @@ export class AudioManager {
           this.playDoor(gain, false);
           break;
         case 'car_crash':
-          this.playCrash(gain * Math.min(1, Math.max(0.2, ev.speed / CRASH_REF_SPEED)));
+          this.playCrash(gain * Math.min(1, Math.max(0.2, ev.speed / CRASH_REF_SPEED)), ev.speed);
           break;
         case 'explosion':
           this.playExplosion(gain);
@@ -243,6 +300,18 @@ export class AudioManager {
     }
   }
 
+  /**
+   * Select the GTA2 bank engine sample for the player's current vehicle.
+   * `cls` is a bank sample id 3-8 (per-vehicle-class engine revs, see
+   * SFX.ENGINE_CLASS_* in src/audio/gta2-sfx.ts; callers compute it from the
+   * car model). null restores the CC0/synth engine behavior. Takes effect on
+   * the next setEngine() call, with a smooth crossfade.
+   */
+  setEngineClass(cls: number | null): void {
+    if (cls === this.engineBankClass) return;
+    this.engineBankClass = cls;
+  }
+
   /** Continuous engine loop; call every frame while in-game. */
   setEngine(active: boolean, speedRatio: number): void {
     if (!this.ready()) return;
@@ -250,11 +319,34 @@ export class AudioManager {
     const r = Math.min(1, Math.max(0, speedRatio));
     const t = ctx.currentTime;
 
-    // Prefer the seamless sample loop once it has decoded.
+    // Prefer the original bank engine sample when a class id is set
+    // (setEngineClass) and the bank provides it.
+    const cls = this.engineBankClass;
+    const bankBuf = cls !== null && this.bank ? this.bank.buffer(cls) : null;
+    if (cls !== null && bankBuf) {
+      if (this.engineOsc) this.stopSynthEngine(t); // hand over from synth
+      const key = `bank:${cls}`;
+      if (this.engineSrc && this.engineSrcKey !== key) this.stopEngineSample(t);
+      if (!this.engineSrc && active) {
+        this.createEngineSample(ctx, bankBuf, key, this.bank!.loopSeconds(cls), BANK_ENGINE_RATE_MIN);
+      }
+      if (!this.engineSrc || !this.engineSrcGain) return;
+      if (active) {
+        const rate = BANK_ENGINE_RATE_MIN + (BANK_ENGINE_RATE_MAX - BANK_ENGINE_RATE_MIN) * r;
+        this.engineSrc.playbackRate.setTargetAtTime(rate, t, 0.08);
+        this.engineSrcGain.gain.setTargetAtTime(0.16 + 0.14 * r, t, 0.05);
+      } else {
+        this.engineSrcGain.gain.setTargetAtTime(0, t, 0.08);
+      }
+      return;
+    }
+
+    // Prefer the seamless CC0 sample loop once it has decoded.
     const loop = this.samples.get('engine-loop');
     if (loop) {
       if (this.engineOsc) this.stopSynthEngine(t); // hand over from synth
-      if (!this.engineSrc && active) this.createEngineSample(ctx, loop);
+      if (this.engineSrc && this.engineSrcKey !== 'cc0') this.stopEngineSample(t); // bank → CC0
+      if (!this.engineSrc && active) this.createEngineSample(ctx, loop, 'cc0', null, ENGINE_RATE_MIN);
       if (!this.engineSrc || !this.engineSrcGain) return;
       if (active) {
         const rate = ENGINE_RATE_MIN + (ENGINE_RATE_MAX - ENGINE_RATE_MIN) * r;
@@ -267,6 +359,7 @@ export class AudioManager {
     }
 
     // Synth fallback while the sample is loading (or if it failed).
+    if (this.engineSrc) this.stopEngineSample(t); // orphaned sample loop (e.g. bank detached)
     if (!this.engineOsc && active) this.createEngine(ctx);
     if (!this.engineOsc || !this.engineFilter || !this.engineGain) return;
     if (active) {
@@ -303,12 +396,57 @@ export class AudioManager {
     this.fireLoop.gain.gain.setTargetAtTime(0.32 * level, this.ctx!.currentTime, 0.12);
   }
 
+  /** Police siren wail; gain follows proximity 0..1 of the nearest cop car. */
+  setSiren(intensity: number): void {
+    if (!this.ready()) return;
+    const level = Math.min(1, Math.max(0, intensity));
+    if (!this.sirenLoop && level > 0.001) {
+      // Prefer the original bank siren loop (id 14); synth two-tone fallback.
+      const bankLoop = this.createBankSirenLoop(this.ctx!);
+      if (bankLoop) {
+        this.sirenLoop = bankLoop;
+        this.sirenLevel = 0.22;
+      } else {
+        this.sirenLoop = this.createSirenLoop(this.ctx!);
+        this.sirenLevel = 0.14;
+      }
+    }
+    if (!this.sirenLoop) return;
+    this.sirenLoop.gain.gain.setTargetAtTime(this.sirenLevel * level, this.ctx!.currentTime, 0.15);
+  }
+
   /** Very quiet city ambience bed (low wind/rumble), barely audible. */
   setAmbience(active: boolean): void {
     if (!this.ready()) return;
     if (!this.ambienceLoop && active) this.ambienceLoop = this.createAmbienceLoop(this.ctx!);
     if (!this.ambienceLoop) return;
     this.ambienceLoop.gain.gain.setTargetAtTime(active ? 0.045 : 0, this.ctx!.currentTime, 0.4);
+  }
+
+  /**
+   * Player footstep one-shot from the bank (pavement set 198-201, random of
+   * 4). Quiet while walking, louder running, ±5% rate. Rate-limited to one
+   * step per 0.25s. No-op when no bank is attached (there is no CC0/synth
+   * footstep — the remake previously had none).
+   */
+  playFootstep(running: boolean): void {
+    if (!this.ready() || !this.enabled) return;
+    const now = this.ctx!.currentTime;
+    const last = this.lastPlayed.get('footstep');
+    if (last !== undefined && now - last < FOOTSTEP_RATE_LIMIT_S) return;
+    this.lastPlayed.set('footstep', now);
+    const idx = SFX.FOOTSTEP_FIRST + Math.floor(Math.random() * SFX.FOOTSTEP_COUNT);
+    this.playBankSample(idx, running ? 0.2 : 0.08, { rate: 0.95 + Math.random() * 0.1 });
+  }
+
+  /**
+   * Ambient crowd murmur, 0..1. While > 0, a random ped chatter sample
+   * (bank 233-238) plays every 2-6 seconds (more often at higher intensity)
+   * at low volume scaled by intensity. Scheduling runs in update(). No-op
+   * without an attached bank (chatter has no CC0/synth equivalent).
+   */
+  setCrowd(intensity: number): void {
+    this.crowdIntensity = Math.min(1, Math.max(0, intensity));
   }
 
   /** Per-frame housekeeping. */
@@ -318,6 +456,15 @@ export class AudioManager {
     const now = this.ctx.currentTime;
     if (this.voiceEnds.length > 0) {
       this.voiceEnds = this.voiceEnds.filter((end) => end > now);
+    }
+    // Occasional crowd chatter while setCrowd intensity > 0.
+    if (this.crowdIntensity > 0.001 && this.enabled && this.bank && this.ready()) {
+      if (now >= this.nextChatterAt) {
+        const idx = SFX.PED_CHATTER_FIRST + Math.floor(Math.random() * SFX.PED_CHATTER_COUNT);
+        this.playBankSample(idx, (0.05 + Math.random() * 0.07) * this.crowdIntensity);
+        // 2-6s spacing, biased shorter as the crowd gets denser.
+        this.nextChatterAt = now + 2 + (1 - this.crowdIntensity) * 2 + Math.random() * 2;
+      }
     }
   }
 
@@ -354,11 +501,32 @@ export class AudioManager {
   private playSample(name: SampleName, gain: number, opts: { rate?: number; maxDur?: number } = {}): boolean {
     const buf = this.samples.get(name);
     if (!buf) return false;
+    this.startOneShot(buf, gain, opts.rate ?? 1, opts.maxDur);
+    return true;
+  }
+
+  /**
+   * Play a one-shot from the attached GTA2 bank. Returns false when no bank
+   * is attached or the bank has no usable entry at `index` (caller falls back
+   * to the CC0/synth path). The bank's own per-sample pitch variation
+   * (Gta2Bank.playbackRate) is always applied; `opts.rate` multiplies on top.
+   * As with playSample, a polyphony-cap drop still returns true.
+   */
+  private playBankSample(index: number, gain: number, opts: { rate?: number; maxDur?: number } = {}): boolean {
+    if (!this.bank) return false;
+    const buf = this.bank.buffer(index);
+    if (!buf) return false;
+    const rate = (opts.rate ?? 1) * this.bank.playbackRate(index);
+    this.startOneShot(buf, gain, rate, opts.maxDur);
+    return true;
+  }
+
+  /** Start a one-shot AudioBuffer voice (shared by CC0 and bank samples). */
+  private startOneShot(buf: AudioBuffer, gain: number, rate: number, maxDur?: number): void {
     const ctx = this.ctx!;
-    const rate = opts.rate ?? 1;
     const natural = buf.duration / rate;
-    const dur = opts.maxDur !== undefined ? Math.min(opts.maxDur, natural) : natural;
-    if (!this.claimVoice(dur)) return true;
+    const dur = maxDur !== undefined ? Math.min(maxDur, natural) : natural;
+    if (!this.claimVoice(dur)) return;
     const t = ctx.currentTime;
     const src = ctx.createBufferSource();
     src.buffer = buf;
@@ -375,7 +543,6 @@ export class AudioManager {
       g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
       src.stop(t + dur);
     }
-    return true;
   }
 
   private distanceGain(pos: Vec2, listener: Vec2): number {
@@ -499,6 +666,8 @@ export class AudioManager {
     const t = this.ctx!.currentTime;
     switch (weapon) {
       case 'pistol':
+        // Original bank pistol shot; pitch variation comes from the SDT entry.
+        if (this.playBankSample(SFX.SHOT_PISTOL, 0.5 * gain)) return;
         // Slight rate jitter so rapid fire does not sound machine-stamped.
         if (this.playSample('shot-pistol', 0.5 * gain, { rate: 0.96 + Math.random() * 0.08, maxDur: 1.0 })) return;
         if (!this.claimVoice(0.14)) return;
@@ -506,12 +675,16 @@ export class AudioManager {
         this.noiseBurst({ t, dur: 0.13, peak: 0.55 * gain, type: 'lowpass', freq: 3200, freqEnd: 500, q: 0.8 });
         break;
       case 'dual_pistol':
+        // Same bank sample as pistol (sound_obj.cpp:1882), a touch louder.
+        if (this.playBankSample(SFX.SHOT_PISTOL, 0.56 * gain)) return;
         // Pistol sound, slightly wider pitch spread and a touch louder.
         if (this.playSample('shot-pistol', 0.56 * gain, { rate: 0.92 + Math.random() * 0.16, maxDur: 1.0 })) return;
         if (!this.claimVoice(0.14)) return;
         this.noiseBurst({ t, dur: 0.13, peak: 0.62 * gain, type: 'lowpass', freq: 3400, freqEnd: 500, q: 0.8 });
         break;
       case 'uzi':
+        // Original bank machine-gun shot.
+        if (this.playBankSample(SFX.SHOT_SMG, 0.42 * gain)) return;
         // Snappier shot pitched well up and trimmed short so the uzi reads
         // clearly different from the pistol.
         if (this.playSample('shot-uzi', 0.32 * gain, { rate: 1.55 + Math.random() * 0.15, maxDur: 0.18 })) return;
@@ -520,18 +693,24 @@ export class AudioManager {
         this.noiseBurst({ t, dur: 0.06, peak: 0.4 * gain, type: 'lowpass', freq: 2600, freqEnd: 700, q: 0.7 });
         break;
       case 's_uzi':
+        // Same bank machine-gun sample, slightly hotter rate for the fast SMG.
+        if (this.playBankSample(SFX.SHOT_SMG, 0.4 * gain, { rate: 1.06 })) return;
         // Faster/snappier variant: uzi pitched up further, trimmed even shorter.
         if (this.playSample('shot-uzi', 0.28 * gain, { rate: 1.95 + Math.random() * 0.2, maxDur: 0.12 })) return;
         if (!this.claimVoice(0.05)) return;
         this.noiseBurst({ t, dur: 0.045, peak: 0.36 * gain, type: 'lowpass', freq: 3200, freqEnd: 900, q: 0.7 });
         break;
       case 'silenced_s_uzi':
-        // Quiet suppressed 'phut': soft noise tick, low volume (synth only).
+        // Original bank silenced SMG shot.
+        if (this.playBankSample(SFX.SHOT_SILENCED_SMG, 0.35 * gain)) return;
+        // Quiet suppressed 'phut': soft noise tick, low volume (synth fallback).
         if (!this.claimVoice(0.06)) return;
         this.noiseBurst({ t, dur: 0.05, peak: 0.12 * gain, attack: 0.001, type: 'lowpass', freq: 1300, freqEnd: 350, q: 0.6 });
         this.tone({ t, dur: 0.04, peak: 0.07 * gain, attack: 0.001, type: 'sine', freq: 170, freqEnd: 90 });
         break;
       case 'shotgun':
+        // Original bank shotgun blast.
+        if (this.playBankSample(SFX.SHOT_SHOTGUN, 0.6 * gain)) return;
         if (this.playSample('shot-shotgun', 0.6 * gain, { maxDur: 1.6 })) return;
         if (!this.claimVoice(0.35)) return;
         // Boomy and wide: low boom plus mid blast.
@@ -539,6 +718,8 @@ export class AudioManager {
         this.noiseBurst({ t, dur: 0.12, peak: 0.35 * gain, type: 'bandpass', freq: 1800, q: 0.5 });
         break;
       case 'rocket':
+        // Original bank rocket-launcher fire.
+        if (this.playBankSample(SFX.SHOT_ROCKET, 0.55 * gain)) return;
         // Launch whoosh: thruster sample trimmed short, else a noise sweep.
         if (this.playSample('rocket-launch', 0.55 * gain, { rate: 1.25 + Math.random() * 0.1, maxDur: 1.3 })) return;
         if (!this.claimVoice(0.6)) return;
@@ -562,8 +743,13 @@ export class AudioManager {
     }
   }
 
-  private playHit(gain: number): void {
+  private playHit(gain: number, surface?: 'ped' | 'car' | 'wall'): void {
     const t = this.ctx!.currentTime;
+    // Bullet on car body: original bank variants 62-64 (random of 3).
+    if (surface === 'car') {
+      const idx = SFX.BULLET_HIT_CAR_FIRST + Math.floor(Math.random() * SFX.BULLET_HIT_CAR_COUNT);
+      if (this.playBankSample(idx, 0.45 * gain)) return;
+    }
     if (!this.claimVoice(0.05)) return;
     this.noiseBurst({ t, dur: 0.03, peak: 0.3 * gain, attack: 0.001, type: 'bandpass', freq: 1200, q: 2 });
     this.tone({ t, dur: 0.05, peak: 0.2 * gain, attack: 0.001, type: 'sine', freq: 200, freqEnd: 90 });
@@ -629,6 +815,8 @@ export class AudioManager {
 
   private playDoor(gain: number, entering: boolean): void {
     const t = this.ctx!.currentTime;
+    // Original bank car door: 26 = close (enter), 25 = open (exit).
+    if (this.playBankSample(entering ? SFX.CAR_DOOR_CLOSE : SFX.CAR_DOOR_OPEN, 0.6 * gain)) return;
     // Entering slams the door shut; exiting pops it open. Subtle random pitch
     // so repeated car-jacking doesn't sound stamped from one mould.
     const rate = 0.94 + Math.random() * 0.12;
@@ -640,8 +828,18 @@ export class AudioManager {
     this.noiseBurst({ t: t + 0.01, dur: 0.05, peak: 0.12 * gain, type: 'bandpass', freq: 900, q: 4 });
   }
 
-  private playCrash(gain: number): void {
+  private playCrash(gain: number, speed: number): void {
     const t = this.ctx!.currentTime;
+    // Original bank impact: light (12) or heavy (13) picked by event speed,
+    // plus a metal crunch layer (43-45 normal / 46-48 heavy) on hard hits.
+    const heavy = speed >= CRASH_HEAVY_SPEED;
+    if (this.playBankSample(heavy ? SFX.CAR_IMPACT_HEAVY : SFX.CAR_IMPACT_LIGHT, 0.8 * gain)) {
+      if (speed >= CRASH_CRUNCH_SPEED) {
+        const first = heavy ? SFX.CRASH_CRUNCH_HEAVY_FIRST : SFX.CRASH_CRUNCH_FIRST;
+        this.playBankSample(first + Math.floor(Math.random() * SFX.CRASH_CRUNCH_COUNT), 0.55 * gain);
+      }
+      return;
+    }
     // 3 randomized variants: random sample pick + rate jitter.
     const pick = CRASH_SAMPLES[Math.floor(Math.random() * CRASH_SAMPLES.length)];
     if (this.playSample(pick, 0.8 * gain, { rate: 0.85 + Math.random() * 0.3 })) return;
@@ -660,6 +858,13 @@ export class AudioManager {
     const debrisT = t + 0.28 + Math.random() * 0.12;
     this.noiseBurst({ t: debrisT, dur: 0.35, peak: 0.16 * gain, attack: 0.01, type: 'bandpass', freq: 1700, freqEnd: 450, q: 2.2 });
     this.noiseBurst({ t: debrisT + 0.07, dur: 0.22, peak: 0.1 * gain, attack: 0.01, type: 'bandpass', freq: 900, freqEnd: 300, q: 1.6 });
+    // Original bank explosion (id 30, best acoustic candidate — the decomp's
+    // explosion-audio path is a stub; see docs/gta2-reference.md §1). Keep the
+    // CC0 low-frequency layer underneath for weight.
+    if (this.playBankSample(SFX.EXPLOSION, 0.9 * gain)) {
+      this.playSample('explosion-low', 0.7 * gain);
+      return;
+    }
     if (this.playSample('explosion-crunch', 0.9 * gain)) {
       // Layer a sub-bass thump under the crunch when available.
       this.playSample('explosion-low', 0.7 * gain);
@@ -677,6 +882,9 @@ export class AudioManager {
     // Ignition whoosh (always synth): rising airy noise that blooms into fire.
     this.noiseBurst({ t: t + 0.04, dur: 0.5, peak: 0.3 * gain, attack: 0.06, type: 'bandpass', freq: 500, freqEnd: 1600, q: 0.7 });
     this.noiseBurst({ t: t + 0.1, dur: 0.45, peak: 0.18 * gain, attack: 0.08, type: 'lowpass', freq: 700, freqEnd: 250, q: 1 });
+    // Quiet bank break layer (40/41 — closest the SDT bank has to glass; the
+    // CC0 glass-shatter below stays the primary smash sound).
+    this.playBankSample(Math.random() < 0.5 ? SFX.GLASS_BREAK_SMALL : SFX.GLASS_BREAK_BIG, 0.25 * gain);
     if (this.playSample('glass-shatter', 0.7 * gain, { rate: 0.95 + Math.random() * 0.1 })) return;
     if (!this.claimVoice(0.3)) return;
     // Synth glass: bright resonant shards.
@@ -688,6 +896,11 @@ export class AudioManager {
   private playSkid(gain: number, intensity: number): void {
     const t = this.ctx!.currentTime;
     if (intensity <= 0.02) return;
+    // Original bank tyre-skid loop (id 22) played as a short one-shot slice;
+    // rate jitter stands in for the original's surface-dependent rate.
+    if (this.playBankSample(SFX.SKID_LOOP, 0.45 * gain * intensity, { maxDur: 0.4, rate: 0.85 + Math.random() * 0.25 })) {
+      return;
+    }
     const dur = 0.25 + 0.2 * intensity;
     if (!this.claimVoice(dur)) return;
     // Falling resonant bandpass over noise reads as rubber losing grip.
@@ -739,12 +952,26 @@ export class AudioManager {
 
   // ----- engine loop -------------------------------------------------------
 
-  /** Seamless engine loop sample, pitched by playbackRate (0.6 - 1.6). */
-  private createEngineSample(ctx: AudioContext, buf: AudioBuffer): void {
+  /**
+   * Looping engine sample, pitched by playbackRate. Used for both the CC0
+   * engine-loop WAV (key 'cc0', whole-buffer loop) and GTA2 bank engine
+   * samples (key 'bank:<idx>', loop points from the SDT entry).
+   */
+  private createEngineSample(
+    ctx: AudioContext,
+    buf: AudioBuffer,
+    key: string,
+    loopPts: { start: number; end: number } | null,
+    initialRate: number,
+  ): void {
     const src = ctx.createBufferSource();
     src.buffer = buf;
     src.loop = true;
-    src.playbackRate.value = ENGINE_RATE_MIN;
+    if (loopPts) {
+      src.loopStart = Math.min(loopPts.start, buf.duration);
+      src.loopEnd = Math.min(loopPts.end, buf.duration);
+    }
+    src.playbackRate.value = initialRate;
     const gain = ctx.createGain();
     gain.gain.value = 0;
     src.connect(gain);
@@ -752,6 +979,21 @@ export class AudioManager {
     src.start();
     this.engineSrc = src;
     this.engineSrcGain = gain;
+    this.engineSrcKey = key;
+  }
+
+  /** Fade out and dispose the sample engine loop (source handover). */
+  private stopEngineSample(t: number): void {
+    if (!this.engineSrc || !this.engineSrcGain) return;
+    this.engineSrcGain.gain.setTargetAtTime(0, t, 0.05);
+    try {
+      this.engineSrc.stop(t + 0.4);
+    } catch {
+      // already stopped
+    }
+    this.engineSrc = null;
+    this.engineSrcGain = null;
+    this.engineSrcKey = null;
   }
 
   /** Fade out and dispose the synth engine (when handing over to the sample). */
@@ -889,6 +1131,57 @@ export class AudioManager {
     this.loopSource(ctx, this.brownNoiseBuffer!, flicker, { type: 'lowpass', freq: 260, q: 0.7, level: 0.55 }); // low roar
     this.loopSource(ctx, this.crackleSlow!, flicker, { type: 'bandpass', freq: 1900, q: 1.2, level: 0.8, rate: 0.85 }); // pops
     this.loopSource(ctx, this.crackleSlow!, flicker, { type: 'highpass', freq: 3800, q: 0.7, level: 0.3, rate: 1.6 }); // fine sizzle
+    return { gain: fader };
+  }
+
+  /**
+   * Original GTA2 siren loop (bank id 14) with loop points from the SDT
+   * entry. Returns null when no bank is attached or the entry is missing
+   * (caller falls back to the synth two-tone wail below).
+   */
+  private createBankSirenLoop(ctx: AudioContext): LoopVoice | null {
+    if (!this.bank) return null;
+    const buf = this.bank.buffer(SFX.SIREN_LOOP);
+    if (!buf) return null;
+    const fader = ctx.createGain();
+    fader.gain.value = 0;
+    fader.connect(this.master!);
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    const pts = this.bank.loopSeconds(SFX.SIREN_LOOP);
+    if (pts) {
+      src.loopStart = Math.min(pts.start, buf.duration);
+      src.loopEnd = Math.min(pts.end, buf.duration);
+    }
+    src.connect(fader);
+    src.start();
+    return { gain: fader };
+  }
+
+  /** Classic two-tone siren wail: oscillator swept by a slow LFO. */
+  private createSirenLoop(ctx: AudioContext): LoopVoice {
+    const fader = ctx.createGain();
+    fader.gain.value = 0;
+    fader.connect(this.master!);
+    const osc = ctx.createOscillator();
+    osc.type = 'triangle';
+    osc.frequency.value = 740;
+    const lfo = ctx.createOscillator();
+    lfo.type = 'sine';
+    lfo.frequency.value = 0.45; // wail cycle
+    const lfoGain = ctx.createGain();
+    lfoGain.gain.value = 170; // sweep ±170 Hz
+    lfo.connect(lfoGain);
+    lfoGain.connect(osc.frequency);
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.value = 850;
+    filter.Q.value = 1.1;
+    osc.connect(filter);
+    filter.connect(fader);
+    osc.start();
+    lfo.start();
     return { gain: fader };
   }
 

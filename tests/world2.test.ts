@@ -5,6 +5,7 @@ import { parseGmp } from '../src/gta2/gmp';
 import { parseSty } from '../src/gta2/sty';
 import { CityMap } from '../src/game2/citymap';
 import { PlayerInput, pushOutOfCar, World2 } from '../src/game2/world2';
+import { Cop } from '../src/game2/police';
 
 const DATA = join(__dirname, '..', 'gamedata');
 const haveData = existsSync(join(DATA, 'wil.gmp')) && existsSync(join(DATA, 'wil.sty'));
@@ -261,6 +262,62 @@ describe.skipIf(!haveData)('World2 on Downtown', () => {
     world.update(1 / 60, { ...NEUTRAL, attack: true });
     expect(world.beam).not.toBeNull();
     expect(ped.dead).toBe(true);
+  });
+
+  it('killing peds raises the wanted level and cop cars come hunting', () => {
+    expect(world.wanted.level).toBe(0);
+    // authentic heat: +100 per ped, star one at 600 → six murders
+    world.player.inventory.add('pistol', 24);
+    let killed = 0;
+    for (let k = 0; k < 12 && killed < 6; k++) {
+      const ped = world.peds.find((x) => !x.dead && !x.isCop);
+      if (!ped) break;
+      ped.pos = { x: world.player.pos.x + 1, y: world.player.pos.y };
+      ped.z = world.player.z;
+      world.player.heading = 0;
+      for (let i = 0; i < 60 && !ped.dead; i++) {
+        world.update(1 / 60, { ...NEUTRAL, attack: i % 30 === 0 });
+      }
+      if (ped.dead) killed++;
+    }
+    expect(killed).toBeGreaterThanOrEqual(6);
+    expect(world.wanted.heat).toBeGreaterThanOrEqual(600);
+    expect(world.wanted.level).toBeGreaterThan(0);
+    // give the dispatcher a few seconds
+    for (let i = 0; i < 60 * 4; i++) world.update(1 / 60, NEUTRAL);
+    expect(world.pursuits.length).toBeGreaterThan(0);
+    // pursuit succeeds if a cop car closes in — or the cops already got you
+    const d0 = Math.min(
+      ...world.pursuits.map((p) => Math.hypot(p.car.pos.x - world.player.pos.x, p.car.pos.y - world.player.pos.y)),
+    );
+    let minD = d0;
+    let busted = false;
+    for (let i = 0; i < 60 * 6; i++) {
+      world.update(1 / 60, NEUTRAL);
+      if (world.drainEvents().some((e) => e.type === 'busted')) busted = true;
+      for (const p of world.pursuits) {
+        minD = Math.min(minD, Math.hypot(p.car.pos.x - world.player.pos.x, p.car.pos.y - world.player.pos.y));
+      }
+    }
+    expect(busted || minD < d0 - 1).toBe(true);
+  });
+
+  it('an arresting cop busts the player: weapons gone, wanted cleared, moved to the station', () => {
+    world.wanted.add(1000); // hot
+    world.player.inventory.add('shotgun', 12);
+    // put a cop right on top of the on-foot player
+    const cop = new Cop({ x: world.player.pos.x + 0.2, y: world.player.pos.y }, world.player.z);
+    world.peds.push(cop);
+    const before = { ...world.player.pos };
+    for (let i = 0; i < 90 && world.wanted.level > 0; i++) world.update(1 / 60, NEUTRAL);
+    expect(world.wanted.level).toBe(0);
+    expect(world.player.inventory.has('shotgun')).toBe(false);
+    expect(world.drainEvents().some((e) => e.type === 'busted')).toBe(true);
+    const station = world.map.policeStation();
+    if (station) {
+      expect(Math.hypot(world.player.pos.x - station.x, world.player.pos.y - station.y)).toBeLessThan(1);
+      expect(Math.hypot(world.player.pos.x - before.x, world.player.pos.y - before.y)).toBeGreaterThan(1);
+    }
   });
 
   it('collects pickups', () => {

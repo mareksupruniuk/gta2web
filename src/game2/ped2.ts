@@ -19,8 +19,12 @@ export class Ped2 {
   heading = 0;
   state: PedState = 'walk';
   health = 20;
+  /** overridden by the police subclass */
+  readonly isCop: boolean = false;
   /** set alight by flames/fire pools: runs around burning, then dies */
   onFire = false;
+  /** died from fire → charred corpse sprite */
+  burned = false;
   private fireTime = 0;
   /** ped colour remap (virtual, relative to ped remap area), -1 = default */
   remap: number;
@@ -78,6 +82,7 @@ export class Ped2 {
       if (rng.chance(0.15)) this.heading += rng.range(-1.2, 1.2);
       if (this.fireTime > 2.5 && emit) {
         this.onFire = false;
+        this.burned = true;
         this.applyDamage(1000, emit);
         return;
       }

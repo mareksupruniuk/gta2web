@@ -104,6 +104,8 @@ export class Bullet {
   carDamage: number;
   /** rockets explode on impact instead of just damaging */
   isRocket = false;
+  /** fired by police: hits the player (and civilians), never cops */
+  hostile = false;
 
   constructor(pos: Vec2, z: number, angle: number, def: WeaponDef) {
     this.pos = { ...pos };

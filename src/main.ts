@@ -1,6 +1,8 @@
 import { AudioManager } from './audio/audio';
+import { Gta2Bank } from './audio/gta2bank';
 import { Input } from './core/input';
 import { CityMap } from './game2/citymap';
+import { Cop } from './game2/police';
 import { Pickup, PlayerInput, World2 } from './game2/world2';
 import { parseGmp } from './gta2/gmp';
 import { parseSty, Sty } from './gta2/sty';
@@ -36,13 +38,30 @@ let msgTimer = 0;
 let lastArea: string | null = null;
 let rafId = 0;
 let lastT = 0;
+/** attack key held this frame — drives punch/firing stances */
+let playerAttacking = false;
 
 // Sprite numbering within the style file (bases are cumulative counts).
 let PED_SPRITE_BASE = 0;
 let OBJ_SPRITE_BASE = 0;
-const PED_WALK_FRAMES = 8;
-const PED_ARMED_BASE = 8; // aiming/armed walk cycle
-const PED_CORPSE_FRAME = 97; // sprawled-on-back death pose
+
+// Authentic ped animation table (docs/gta2-reference.md §2, from gta2_re):
+// 474 ped sprites = 3 sets of 158. Within a set:
+const PED_SET_PLAYER = 0;
+const PED_SET_CIVILIAN = 158; // graphic_type 1 is the game's default
+const PED_SET_COP = 316; // army/cop set (graphic_type 2)
+const ANIM = {
+  walk: { base: 0, frames: 8 },
+  run: { base: 8, frames: 8 },
+  jump: { base: 16, frames: 8 },
+  armedWalk: { base: 37, frames: 8 },
+  idle: { base: 53, frames: 4 },
+  punchStand: { base: 115, frames: 8 },
+  punchMove: { base: 123, frames: 8 },
+  firing: 139,
+  corpses: [80, 156, 157],
+  burnedCorpse: 155,
+};
 // Pickup art: 8 rotation frames per weapon starting at these obj-sprite bases.
 const PICKUP_SPRITES: Record<Pickup['kind'], number> = {
   pistol: 18,
@@ -124,6 +143,14 @@ async function startGame(): Promise<void> {
     renderer = CityRenderer.create($('game'), map.gmp, sty);
     (window as unknown as { __renderer: CityRenderer }).__renderer = renderer;
 
+    // Original GTA2 sound bank for this district (async; synth/CC0 until loaded).
+    const actx = audio.audioContext;
+    if (actx) {
+      void Gta2Bank.load(actx, district).then((bank) => {
+        if (bank) audio.attachBank(bank);
+      });
+    }
+
     menuEl.classList.add('hidden');
     hudEl.classList.add('visible');
     paused = false;
@@ -185,12 +212,21 @@ function entities(w: World2): RenderEntity[] {
     });
   }
   for (const ped of w.peds) {
-    const frame = ped.dead
-      ? PED_CORPSE_FRAME
-      : Math.floor(ped.animTime * 10) % PED_WALK_FRAMES;
+    const isCop = ped.isCop;
+    const set = isCop ? PED_SET_COP : PED_SET_CIVILIAN;
+    let frame: number;
+    if (ped.dead) {
+      frame = ped.burned ? ANIM.burnedCorpse : ANIM.corpses[ped.id % ANIM.corpses.length];
+    } else if (ped instanceof Cop && ped.shooting) {
+      frame = ANIM.firing;
+    } else if (ped.state === 'flee' || isCop) {
+      frame = ANIM.run.base + (Math.floor(ped.animTime * 12) % ANIM.run.frames);
+    } else {
+      frame = ANIM.walk.base + (Math.floor(ped.animTime * 10) % ANIM.walk.frames);
+    }
     out.push({
       key: `ped:${ped.id}`,
-      sprite: PED_SPRITE_BASE + frame,
+      sprite: PED_SPRITE_BASE + set + frame,
       remapPhys: ped.remap >= 0 ? s.pedRemapPalette(ped.remap) : undefined,
       x: ped.pos.x, y: ped.pos.y, z: ped.z + (ped.dead ? 0.02 : 0.03),
       angle: ped.heading,
@@ -199,13 +235,24 @@ function entities(w: World2): RenderEntity[] {
   }
   const p = w.player;
   if (!p.car && !p.dead) {
-    // Armed stance (aiming cycle) when holding a weapon, plain walk otherwise.
     const armed = p.inventory.current !== 'fists';
-    const base = armed ? PED_ARMED_BASE : 0;
-    const frame = p.moving ? base + (Math.floor(p.animTime * 10) % PED_WALK_FRAMES) : base;
+    let frame: number;
+    if (p.vz !== 0) {
+      // airborne: jump cycle paced over the hop
+      frame = ANIM.jump.base + Math.min(ANIM.jump.frames - 1, Math.floor((1 - Math.max(0, p.vz) / 4.3) * ANIM.jump.frames));
+    } else if (playerAttacking && !armed) {
+      frame = (p.moving ? ANIM.punchMove : ANIM.punchStand).base + (Math.floor(p.animTime * 14) % 8);
+    } else if (playerAttacking && armed) {
+      frame = ANIM.firing;
+    } else if (p.moving) {
+      const cycle = armed ? ANIM.armedWalk : ANIM.walk;
+      frame = cycle.base + (Math.floor(p.animTime * 10) % cycle.frames);
+    } else {
+      frame = ANIM.idle.base + (Math.floor(w.time * 3) % ANIM.idle.frames);
+    }
     out.push({
       key: 'player',
-      sprite: PED_SPRITE_BASE + frame,
+      sprite: PED_SPRITE_BASE + PED_SET_PLAYER + frame,
       x: p.pos.x, y: p.pos.y, z: p.z + 0.035,
       angle: p.heading,
       ...gradAt(w, p.pos.x, p.pos.y, p.z),
@@ -285,6 +332,7 @@ function tick(now: number): void {
 
   if (!paused) {
     const pin = readInput();
+    playerAttacking = pin.attack;
     accumulator += dt;
     let first = true;
     while (accumulator >= FIXED_DT) {
@@ -313,6 +361,8 @@ function tick(now: number): void {
       if (e.type === 'player_died') {
         showMsg('WASTED', 3);
         respawnTimer = 3;
+      } else if (e.type === 'busted') {
+        showMsg('BUSTED', 3);
       }
     }
     if (world.player.dead) {
@@ -375,9 +425,37 @@ function tick(now: number): void {
     audio.setFlamethrower(firing && def.id === 'flamethrower' && world.flames.length > 0);
     audio.setElectro(firing && !!world.beam);
     audio.setFireNearby(Math.max(0, Math.min(1, fireNear)));
+    // Siren wail follows the nearest active pursuit car.
+    let sirenNear = 0;
+    for (const p of world.pursuits) {
+      if (p.car.exploded) continue;
+      const d = Math.hypot(p.car.pos.x - world.player.pos.x, p.car.pos.y - world.player.pos.y);
+      sirenNear = Math.max(sirenNear, 1 - d / 14);
+    }
+    audio.setSiren(sirenNear);
 
     const car = world.player.car;
     audio.setEngine(!!car && !world.player.dead, car ? Math.min(1, car.speed() / car.handling.maxSpeed) : 0);
+    // Bank engine sample by vehicle class (docs §1: 3 default, 4 small,
+    // 5 sports, 6 sedans, 7 vans, 8 trucks/bus) — approximated by size/rating.
+    if (car) {
+      const h = car.info.h;
+      const cls = h <= 56 ? 4 : car.info.rating >= 21 && h < 70 ? 5 : h <= 66 ? 6 : h <= 80 ? 7 : 8;
+      audio.setEngineClass(cls);
+    } else {
+      audio.setEngineClass(null);
+    }
+    // Footsteps while walking on foot; light crowd chatter near civilians.
+    if (!car && !world.player.dead && world.player.moving && world.player.vz === 0) {
+      audio.playFootstep(false);
+    }
+    let crowd = 0;
+    for (const ped of world.peds) {
+      if (ped.dead) continue;
+      const d = Math.hypot(ped.pos.x - world.player.pos.x, ped.pos.y - world.player.pos.y);
+      if (d < 5) crowd += 1 - d / 5;
+    }
+    audio.setCrowd(Math.min(1, crowd / 4));
     audio.update(dt);
     updateHud(world);
 
@@ -394,6 +472,7 @@ function tick(now: number): void {
     audio.setFlamethrower(false);
     audio.setElectro(false);
     audio.setFireNearby(0);
+    audio.setSiren(0);
   }
   audio.setAmbience(!paused);
 

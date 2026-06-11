@@ -4,6 +4,7 @@ import { angleDiff, GameEvent, Vec2, dist } from '../sim/types';
 import { Car2 } from './car2';
 import { CityMap } from './citymap';
 import { panicNearby, Ped2, PED_RADIUS } from './ped2';
+import { Cop, COP_CAR_MODEL, policeCarModel, PursuitAI } from './police';
 import { TrafficAI, dirAngle, dirNameFromArrows } from './traffic2';
 import { Bullet, Flame, Inventory, Thrown, WEAPONS } from './weapons2';
 import { HEAT_PER, Wanted } from './wanted';
@@ -120,6 +121,10 @@ export class World2 {
   events: GameEvent[] = [];
   wanted = new Wanted();
   time = 0;
+  /** active police pursuits (their cars also live in this.cars) */
+  pursuits: PursuitAI[] = [];
+  private copCarIds = new Set<number>();
+  private policeTimer = 0;
   /** cars recently damaged by the player (for crime attribution) */
   private playerDamaged = new Map<number, number>();
   private heatCounted = new Set<number>();
@@ -241,12 +246,13 @@ export class World2 {
     this.exitGrace = Math.max(0, this.exitGrace - dt);
     this.beam = null;
     this.wanted.update(dt);
-    // Destroying a car you recently shot/burned is a crime.
+    // Destroying a car you recently shot/burned is a crime — and per the
+    // original, any car kill bumps you straight to at least one star.
     for (const car of this.cars) {
       if (!car.exploded || this.heatCounted.has(car.id)) continue;
       const t = this.playerDamaged.get(car.id);
       if (t !== undefined && this.time - t < 6) {
-        this.wanted.add(HEAT_PER.carDestroyed);
+        this.wanted.add(HEAT_PER.carDestroyed, true);
         this.heatCounted.add(car.id);
       }
     }
@@ -283,7 +289,12 @@ export class World2 {
     this.bailFromBurningCars();
     this.resolveCarCollisions();
     for (const ped of this.peds) {
-      ped.update(dt, this.map, this.rng, this.emit);
+      if (ped instanceof Cop) {
+        const verdict = ped.updateCop(dt, this.map, this.rng, this.emit, player, this.wanted.level, this.bullets);
+        if (verdict === 'arrest') this.bust();
+      } else {
+        ped.update(dt, this.map, this.rng, this.emit);
+      }
       if (ped.dead) continue;
       for (const car of this.cars) {
         // fast cars run peds over (handled below); slow ones are solid
@@ -292,6 +303,7 @@ export class World2 {
         }
       }
     }
+    this.maintainPolice(dt);
     this.runOverChecks();
     this.updateBullets(dt);
     this.updateThrown(dt);
@@ -404,7 +416,7 @@ export class World2 {
           if (Math.abs(angleDiff(player.heading, a)) < 1.1) {
             ped.applyDamage(def.pedDamage, this.emit, player.pos);
             this.emit({ type: 'hit', pos: { ...ped.pos }, surface: 'ped' });
-            if (ped.dead) { player.score += 10; this.wanted.add(HEAT_PER.pedKilled); }
+            if (ped.dead) { player.score += 10; this.wanted.add(ped.isCop ? HEAT_PER.copKilled : HEAT_PER.pedKilled); }
             return;
           }
         }
@@ -471,7 +483,7 @@ export class World2 {
       const ped = this.peds.find((pd) => !pd.dead && Math.abs(pd.z - p.z) < 1 && dist(pd.pos, { x, y }) < PED_RADIUS + 0.12);
       if (ped) {
         ped.applyDamage(pedDamage, this.emit, p.pos);
-        if (ped.dead) { p.score += 10; this.wanted.add(HEAT_PER.pedKilled); }
+        if (ped.dead) { p.score += 10; this.wanted.add(ped.isCop ? HEAT_PER.copKilled : HEAT_PER.pedKilled); }
         this.emit({ type: 'hit', pos: { x, y }, surface: 'ped' });
         break;
       }
@@ -568,7 +580,7 @@ export class World2 {
         if (ped.dead || Math.abs(ped.z - car.z) > 0.8) continue;
         if (car.containsPoint(ped.pos.x, ped.pos.y, PED_RADIUS)) {
           ped.applyDamage(100, this.emit);
-          if (car.driver === 'player') { this.player.score += 10; this.wanted.add(HEAT_PER.pedKilled); }
+          if (car.driver === 'player') { this.player.score += 10; this.wanted.add(ped.isCop ? HEAT_PER.copKilled : HEAT_PER.pedKilled); }
         }
       }
       const p = this.player;
@@ -597,13 +609,25 @@ export class World2 {
         alive = false;
         detonate = true;
       }
+      if (alive && b.hostile && !this.player.dead && !this.player.car) {
+        // police fire can hit the player
+        if (Math.abs(this.player.z + 0.5 - b.z) < 0.9 && dist(this.player.pos, b.pos) < PLAYER_RADIUS + 0.07) {
+          this.player.applyDamage(b.pedDamage);
+          this.emit({ type: 'hit', pos: { ...b.pos }, surface: 'ped' });
+          alive = false;
+        }
+      }
       if (alive) {
         for (const ped of this.peds) {
           if (ped.dead || Math.abs(ped.z + 0.5 - b.z) > 0.9) continue;
+          if (b.hostile && ped.isCop) continue; // cops don't shoot each other
           if (dist(ped.pos, b.pos) < PED_RADIUS + 0.07) {
             if (!b.isRocket) {
               ped.applyDamage(b.pedDamage, this.emit, { x: ox, y: oy });
-              if (ped.dead) { this.player.score += 10; this.wanted.add(HEAT_PER.pedKilled); }
+              if (ped.dead && !b.hostile) {
+                this.player.score += 10;
+                this.wanted.add(ped.isCop ? HEAT_PER.copKilled : HEAT_PER.pedKilled);
+              }
             }
             this.emit({ type: 'hit', pos: { ...b.pos }, surface: 'ped' });
             alive = false;
@@ -734,6 +758,119 @@ export class World2 {
       }
     }
     this.firePools = this.firePools.filter((p) => p.ttl > 0);
+  }
+
+  /** Spawn/retire police pressure to match the wanted level. */
+  private maintainPolice(dt: number): void {
+    // Pursuit driving every tick.
+    for (const p of this.pursuits) {
+      if (p.update(dt, this.player, this.map, this.rng) === 'deploy') this.deployCops(p.car);
+    }
+
+    this.policeTimer -= dt;
+    if (this.policeTimer > 0) return;
+    this.policeTimer = 1;
+
+    const level = this.wanted.level;
+    if (level === 0) {
+      // Heat gone: pursuits break off and patrol away; cops stop chasing.
+      for (const p of this.pursuits) p.car.controls = { throttle: 0, steer: 0, handbrake: false };
+      this.pursuits = [];
+      // remaining cop cars get cleaned up by the despawn logic below
+    }
+
+    // Drop pursuits whose car died.
+    this.pursuits = this.pursuits.filter((p) => !p.car.exploded && this.cars.includes(p.car));
+
+    // Cop-car destruction is serious heat (only when the player caused it).
+    for (const car of this.cars) {
+      if (!this.copCarIds.has(car.id) || !car.exploded || this.heatCounted.has(car.id)) continue;
+      const t = this.playerDamaged.get(car.id);
+      if (t !== undefined && this.time - t < 6) {
+        this.wanted.add(HEAT_PER.copCarDestroyed, true);
+        this.heatCounted.add(car.id);
+      }
+    }
+
+    // Despawn stray cop cars when calm (far away, no pursuit).
+    if (level === 0) {
+      this.cars = this.cars.filter((c) => {
+        if (!this.copCarIds.has(c.id) || c.exploded) return true;
+        if (dist(c.pos, this.player.pos) > 10) {
+          this.copCarIds.delete(c.id);
+          return false;
+        }
+        return true;
+      });
+      return;
+    }
+
+    // Keep min(level, 4) pursuit cars on the player.
+    const activeCopCars = this.pursuits.length;
+    const wantCars = Math.min(level, 4);
+    if (activeCopCars < wantCars) this.spawnCopCar();
+  }
+
+  private copInfo(): CarInfo | null {
+    // force escalation: police → FBI cars → army jeeps
+    const model = policeCarModel(this.wanted.level);
+    return (
+      this.sty.cars.find((c) => c.model === model) ??
+      this.sty.cars.find((c) => c.model === COP_CAR_MODEL) ??
+      null
+    );
+  }
+
+  private spawnCopCar(): void {
+    const info = this.copInfo();
+    if (!info) return;
+    const candidates = this.roadSpawns.filter((s) => {
+      const d = dist(s, this.player.pos);
+      return d > 8 && d < 16;
+    });
+    if (candidates.length === 0) return;
+    const s = this.rng.pick(candidates);
+    for (const c of this.cars) {
+      if (dist(c.pos, s) < 1.5) return;
+    }
+    // spawn lane-aligned like normal traffic so they start driveable
+    const dir = dirNameFromArrows(this.map.arrowsAt(s.x, s.y, s.z), this.rng);
+    if (!dir) return;
+    const car = new Car2(info, -1, { x: s.x, y: s.y }, s.z, dirAngle(dir));
+    this.cars.push(car);
+    this.copCarIds.add(car.id);
+    this.pursuits.push(new PursuitAI(car, dir));
+  }
+
+  /** Two officers bail out of a stopped cop car. */
+  private deployCops(car: Car2): void {
+    const activeCops = this.peds.filter((p) => p.isCop && !p.dead).length;
+    if (activeCops >= Math.min(this.wanted.level * 2, 6)) return;
+    for (const side of [car.heading - Math.PI / 2, car.heading + Math.PI / 2]) {
+      const out = {
+        x: car.pos.x + Math.cos(side) * (car.width / 2 + 0.25),
+        y: car.pos.y + Math.sin(side) * (car.width / 2 + 0.25),
+      };
+      if (!this.map.canMove(car.pos.x, car.pos.y, out.x, out.y, car.z, 0.6)) continue;
+      this.peds.push(new Cop(out, car.z, this.wanted.level));
+    }
+  }
+
+  /** Arrested: BUSTED — weapons confiscated, dropped at the police station. */
+  private bust(): void {
+    const p = this.player;
+    this.emit({ type: 'busted', pos: { ...p.pos } });
+    const station = this.map.policeStation() ?? this.spawnPoint;
+    p.pos = { x: station.x, y: station.y };
+    p.z = station.z;
+    p.car = null;
+    p.inventory.ammo.clear();
+    p.inventory.ammo.set('fists', Infinity);
+    p.inventory.current = 'fists';
+    this.wanted.clear();
+    // pursuit breaks off; officers head back to their day
+    this.pursuits = [];
+    this.peds = this.peds.filter((ped) => !ped.isCop);
   }
 
   /** Blocked AI drivers lean on the horn now and then. */

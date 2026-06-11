@@ -152,6 +152,18 @@ export class CityMap {
     return best?.name ?? null;
   }
 
+  /** Police station drop-off (busted respawn): first 'policestation*' zone. */
+  policeStation(): { x: number; y: number; z: number } | null {
+    const z = this.gmp.zones.find(
+      (zn) => zn.type === ZoneType.Information && zn.name.toLowerCase().startsWith('policestation'),
+    );
+    if (!z) return null;
+    const x = z.x + z.w / 2;
+    const y = z.y + z.h / 2;
+    const gz = this.groundZ(x, y, 7.9);
+    return gz !== null ? { x, y, z: gz } : null;
+  }
+
   /** Player spawn: centre of a restart zone (fallback: map centre). */
   playerSpawn(): { x: number; y: number; z: number } {
     const restarts = this.zonesOfType(ZoneType.Restart);
