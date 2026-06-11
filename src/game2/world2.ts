@@ -140,8 +140,14 @@ export class World2 {
     }
     this.player = new Player2(this.spawnPoint);
 
-    // Cars that make sense as street traffic: normal sized, recyclable.
-    this.usableCars = sty.cars.filter((c) => c.rating !== 99 && c.h <= 80 && c.w >= 20);
+    // Traffic models come from the style file's RECY chunk — the exact list
+    // the original game recycles as dummy traffic. Fallback to a heuristic
+    // when a style has no usable RECY data.
+    const recyclable = new Set(sty.recyclableModels);
+    this.usableCars = sty.cars.filter((c) => recyclable.has(c.model));
+    if (this.usableCars.length < 4) {
+      this.usableCars = sty.cars.filter((c) => c.rating !== 99 && c.h <= 80 && c.w >= 20);
+    }
 
     const spawns = map.scanSpawns();
     this.roadSpawns = spawns.roads;

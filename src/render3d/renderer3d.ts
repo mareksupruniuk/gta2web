@@ -14,6 +14,8 @@ export interface RenderEntity {
   key: string; // 'car:12', 'ped:7', 'player', 'pickup:3', ...
   sprite: number; // STY sprite index
   remapPhys?: number; // physical palette override (car colours, ped skins)
+  /** sprite delta overlays to composite (car damage dents) */
+  deltas?: number[];
   x: number; // block units
   y: number;
   z: number;
@@ -83,7 +85,7 @@ export class CityRenderer {
   private mount: HTMLElement;
   private spriteTex = new Map<string, THREE.Texture>();
   private fxTex = new Map<string, THREE.Texture>();
-  private entityMeshes = new Map<string, { mesh: THREE.Mesh; sprite: number; remap?: number; tint?: number }>();
+  private entityMeshes = new Map<string, { mesh: THREE.Mesh; sprite: number; remap?: number; tint?: number; deltaKey?: string }>();
   private effects: Effect[] = [];
   private decals: THREE.Mesh[] = [];
   private tracerMeshes = new Map<number, { mesh: THREE.Mesh; kind: TracerKind }>();
@@ -159,11 +161,11 @@ export class CityRenderer {
   // -------------------------------------------------------------- sprites
 
   /** Texture for an STY sprite (optionally palette-remapped), cached. */
-  private spriteTexture(sprite: number, remapPhys?: number): THREE.Texture {
-    const key = `${sprite}:${remapPhys ?? -1}`;
+  private spriteTexture(sprite: number, remapPhys?: number, deltas?: number[]): THREE.Texture {
+    const key = `${sprite}:${remapPhys ?? -1}:${deltas?.join('.') ?? ''}`;
     let tex = this.spriteTex.get(key);
     if (tex) return tex;
-    const { w, h, data } = this.sty.spriteRGBA(sprite, remapPhys);
+    const { w, h, data } = this.sty.spriteRGBA(sprite, remapPhys, deltas);
     // Flip rows so image-top ends up at the plane's +y edge.
     const flipped = new Uint8Array(data.length);
     for (let y = 0; y < h; y++) {
@@ -183,22 +185,23 @@ export class CityRenderer {
     const seen = new Set<string>();
     for (const e of entities) {
       seen.add(e.key);
+      const deltaKey = e.deltas?.join('.') ?? '';
       let rec = this.entityMeshes.get(e.key);
-      if (rec && (rec.sprite !== e.sprite || rec.remap !== e.remapPhys || rec.tint !== e.tint)) {
+      if (rec && (rec.sprite !== e.sprite || rec.remap !== e.remapPhys || rec.tint !== e.tint || rec.deltaKey !== deltaKey)) {
         this.scene.remove(rec.mesh);
         disposeMesh(rec.mesh);
         rec = undefined;
         this.entityMeshes.delete(e.key);
       }
       if (!rec) {
-        const tex = this.spriteTexture(e.sprite, e.remapPhys);
+        const tex = this.spriteTexture(e.sprite, e.remapPhys, e.deltas);
         const entry = this.sty.sprites[e.sprite];
         const geo = new THREE.PlaneGeometry(entry.w / 64, entry.h / 64);
         const mat = new THREE.MeshBasicMaterial({ map: tex, alphaTest: 0.4, side: THREE.DoubleSide });
         if (e.tint !== undefined) mat.color.set(e.tint);
         const mesh = new THREE.Mesh(geo, mat);
         this.scene.add(mesh);
-        rec = { mesh, sprite: e.sprite, remap: e.remapPhys, tint: e.tint };
+        rec = { mesh, sprite: e.sprite, remap: e.remapPhys, tint: e.tint, deltaKey };
         this.entityMeshes.set(e.key, rec);
       }
       rec.mesh.position.set(e.x, -e.y, e.z);

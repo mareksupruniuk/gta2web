@@ -167,11 +167,14 @@ function entities(w: World2): RenderEntity[] {
   const out: RenderEntity[] = [];
   const s = sty!;
   for (const car of w.cars) {
+    // Visible damage: composite the style file's dent deltas as health drops.
+    const dents = car.exploded ? 0 : car.health < 25 ? 3 : car.health < 45 ? 2 : car.health < 70 ? 1 : 0;
     out.push({
       key: `car:${car.id}`,
       sprite: car.info.spriteIdx,
       remapPhys: car.remap >= 0 ? s.carRemapPalette(car.remap) : undefined,
       tint: car.exploded ? 0x3a3a3a : undefined,
+      deltas: dents > 0 ? Array.from({ length: dents }, (_, i) => i) : undefined,
       x: car.pos.x, y: car.pos.y, z: car.z + 0.05,
       angle: car.heading,
       ...gradAt(w, car.pos.x, car.pos.y, car.z),

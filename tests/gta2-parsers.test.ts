@@ -136,3 +136,34 @@ describe.skipIf(!haveData)('bil.sty (real data)', () => {
     expect(geo.solid.uvs.length / 2).toBe(geo.solid.positions.length / 3);
   });
 });
+
+describe.skipIf(!haveData)('RECY + deltas (real data)', () => {
+  it('lists recyclable traffic models', () => {
+    const sty = parseSty(load('wil.sty'));
+    expect(sty.recyclableModels.length).toBeGreaterThan(5);
+    expect(sty.recyclableModels.length).toBeLessThanOrEqual(64);
+    // nearly all recyclable models exist in car info (wil lists one model,
+    // 43, that has no CARI entry — the game skips unknown models)
+    const models = new Set(sty.cars.map((c) => c.model));
+    const present = sty.recyclableModels.filter((m) => models.has(m));
+    expect(present.length).toBeGreaterThanOrEqual(sty.recyclableModels.length - 1);
+  });
+
+  it('parses sprite deltas and composites them without corruption', () => {
+    const sty = parseSty(load('wil.sty'));
+    expect(sty.deltas.size).toBeGreaterThan(10);
+    // pick a car sprite with deltas and verify compositing changes pixels
+    const carWithDeltas = sty.cars.find((c) => sty.deltas.has(c.spriteIdx) && (sty.deltas.get(c.spriteIdx)?.length ?? 0) > 0);
+    expect(carWithDeltas).toBeTruthy();
+    const s = carWithDeltas!.spriteIdx;
+    const plain = sty.spriteRGBA(s);
+    const dented = sty.spriteRGBA(s, undefined, [0]);
+    expect(dented.w).toBe(plain.w);
+    let diff = 0;
+    for (let i = 0; i < plain.data.length; i++) {
+      if (plain.data[i] !== dented.data[i]) diff++;
+    }
+    expect(diff).toBeGreaterThan(0); // delta changed something
+    expect(diff).toBeLessThan(plain.data.length / 2); // ...but not everything
+  });
+});

@@ -44,6 +44,11 @@ export interface PaletteBase {
   fontRemap: number;
 }
 
+export interface SpriteDelta {
+  /** byte stream of {u16 pageOffset, u8 len, data[len]} records */
+  data: Uint8Array;
+}
+
 export class Sty {
   version!: number;
   tileData!: Uint8Array; // raw TILE chunk (pages)
@@ -54,6 +59,10 @@ export class Sty {
   sprites!: SpriteEntry[];
   spriteBase!: { car: number; ped: number; codeObj: number; mapObj: number; user: number; font: number };
   cars!: CarInfo[];
+  /** car models eligible for traffic recycling (RECY chunk) */
+  recyclableModels: number[] = [];
+  /** sprite deltas (damage overlays etc.), keyed by sprite number */
+  deltas = new Map<number, SpriteDelta[]>();
 
   get tileCount(): number {
     return (this.tileData.length / (PAGE * PAGE)) * 16;
@@ -102,8 +111,10 @@ export class Sty {
   /**
    * Decode sprite s to RGBA. remap: physical palette override (e.g. car
    * colour remaps); when omitted the sprite's own virtual palette is used.
+   * deltaIndices: which of the sprite's deltas (damage dents, lights...) to
+   * composite on top, in order.
    */
-  spriteRGBA(s: number, remapPhys?: number): { w: number; h: number; data: Uint8Array } {
+  spriteRGBA(s: number, remapPhys?: number, deltaIndices?: number[]): { w: number; h: number; data: Uint8Array } {
     const e = this.sprites[s];
     const phys = remapPhys ?? this.physPalette(this.palBase.tile + s);
     const out = new Uint8Array(e.w * e.h * 4);
@@ -111,11 +122,24 @@ export class Sty {
     const ofs = e.ptr % (PAGE * PAGE);
     const sx = ofs % PAGE;
     const sy = Math.floor(ofs / PAGE);
+
+    // 8bpp working copy of the sprite rect so deltas can patch it.
+    const indexed = new Uint8Array(e.w * e.h);
     for (let y = 0; y < e.h; y++) {
       for (let x = 0; x < e.w; x++) {
-        const c = this.spriteData[pageIdx * PAGE * PAGE + (sy + y) * PAGE + sx + x];
-        this.color(phys, c, out, (y * e.w + x) * 4);
+        indexed[y * e.w + x] = this.spriteData[pageIdx * PAGE * PAGE + (sy + y) * PAGE + sx + x];
       }
+    }
+    if (deltaIndices && deltaIndices.length > 0) {
+      const list = this.deltas.get(s) ?? [];
+      for (const di of deltaIndices) {
+        const d = list[di];
+        if (d) applyDelta(indexed, e.w, e.h, d.data);
+      }
+    }
+
+    for (let i = 0; i < indexed.length; i++) {
+      this.color(phys, indexed[i], out, i * 4);
     }
     return { w: e.w, h: e.h, data: out };
   }
@@ -128,6 +152,29 @@ export class Sty {
   /** Physical palette for ped remap r. */
   pedRemapPalette(r: number): number {
     return this.physPalette(this.palBase.tile + this.palBase.sprite + this.palBase.carRemap + r);
+  }
+}
+
+/**
+ * Composite a delta onto an 8bpp sprite rect. The delta is a stream of
+ * {u16 offset, u8 len, data[len]} records; offsets accumulate from the
+ * sprite's top-left and are measured in 256-px page rows (per the style
+ * doc), so x = pos % 256, y = pos >> 8 within the sprite.
+ */
+function applyDelta(indexed: Uint8Array, w: number, h: number, data: Uint8Array): void {
+  let pos = 0;
+  let p = 0;
+  while (p + 3 <= data.length) {
+    pos += data[p] | (data[p + 1] << 8);
+    const len = data[p + 2];
+    p += 3;
+    const x = pos % PAGE;
+    const y = Math.floor(pos / PAGE);
+    for (let i = 0; i < len && p + i < data.length; i++) {
+      if (x + i < w && y < h) indexed[y * w + x + i] = data[p + i];
+    }
+    p += len;
+    pos += len;
   }
 }
 
@@ -221,6 +268,37 @@ export function parseSty(buffer: ArrayBuffer): Sty {
     }
     if (r.pos !== cari.size) {
       throw new Error(`CARI parse mismatch: ended at ${r.pos} of ${cari.size}`);
+    }
+  }
+
+  // RECY: car models eligible for traffic recycling (255-terminated bytes).
+  const recy = chunks.get('RECY');
+  if (recy) {
+    const r = new BinReader(buffer, recy.offset, recy.size);
+    while (r.pos < recy.size) {
+      const m = r.u8();
+      if (m === 255) break;
+      sty.recyclableModels.push(m);
+    }
+  }
+
+  // DELX (delta index) + DELS (delta store): per-sprite damage overlays.
+  const delx = chunks.get('DELX');
+  const dels = chunks.get('DELS');
+  if (delx && dels) {
+    const r = new BinReader(buffer, delx.offset, delx.size);
+    let storeOfs = 0;
+    while (r.pos + 4 <= delx.size) {
+      const whichSprite = r.u16();
+      const count = r.u8();
+      r.skip(1); // pad
+      const list: SpriteDelta[] = [];
+      for (let i = 0; i < count; i++) {
+        const size = r.u16();
+        list.push({ data: new Uint8Array(buffer, dels.offset + storeOfs, size) });
+        storeOfs += size;
+      }
+      sty.deltas.set(whichSprite, list);
     }
   }
 
