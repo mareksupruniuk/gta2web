@@ -402,12 +402,13 @@ export class World2 {
       }
     }
     if (!best) return;
+    const jacked = best.driver === 'ai';
     this.drivers = this.drivers.filter((d) => d.car !== best);
     best.driver = 'player';
     player.car = best;
     player.pos = { ...best.pos };
     player.z = best.z;
-    this.emit({ type: 'car_enter', pos: { ...best.pos } });
+    this.emit({ type: 'car_enter', pos: { ...best.pos }, jacked });
   }
 
   private playerAttack(): void {
@@ -915,7 +916,7 @@ export class World2 {
           this.player.inventory.add(p.kind, WEAPONS[p.kind].pickupAmmo);
         }
         p.respawnIn = PICKUP_RESPAWN;
-        this.emit({ type: 'pickup', pos: { ...p.pos } });
+        this.emit({ type: 'pickup', pos: { ...p.pos }, kind: p.kind });
       }
     }
   }

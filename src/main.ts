@@ -414,9 +414,23 @@ function tick(now: number): void {
     for (const e of events) {
       if (e.type === 'player_died') {
         showMsg('WASTED', 3);
+        audio.playVocal('wasted', { priority: true });
         respawnTimer = 3;
       } else if (e.type === 'busted') {
         showMsg('BUSTED', 3);
+        audio.playVocal('busted', { priority: true });
+      } else if (e.type === 'car_enter' && e.jacked) {
+        audio.playVocal(Math.random() < 0.5 ? 'carjacker' : 'gta');
+      } else if (e.type === 'pickup' && e.kind) {
+        const v = PICKUP_VOCALS[e.kind];
+        if (v) audio.playVocal(v);
+      } else if (e.type === 'score') {
+        // announcer taunts: always for cop kills, occasionally otherwise
+        if (e.amount === 150) audio.playVocal('copkilla');
+        else if (e.label === 'COP CAR CRUSH!') audio.playVocal('hallelujah');
+        else if (e.amount === 50 && Math.random() < 0.12) {
+          audio.playVocal(KILL_TAUNTS[Math.floor(Math.random() * KILL_TAUNTS.length)]);
+        }
       }
     }
     if (world.player.dead) {
@@ -579,6 +593,18 @@ function respawnPlayer(): void {
   p.inventory.ammo.set('fists', Infinity);
   p.inventory.current = 'fists';
 }
+
+// Original announcer vocals for weapon/health pickups (Vocals/*.wav).
+const PICKUP_VOCALS: Record<string, string> = {
+  pistol: 'pistolp', dual_pistol: 'dualpist', uzi: 'macgun', s_uzi: 'macgun',
+  silenced_s_uzi: 'silentmg', shotgun: 'shotgun', rocket: 'rocketl',
+  electrogun: 'electrofingers', flamethrower: 'flamet', molotov: 'molotovs',
+  grenade: 'grenades', health: 'health',
+};
+const KILL_TAUNTS = [
+  'sorryaboutthat', 'thatsgottahurt', 'oohdidthathurt', 'sorrydidthathurt',
+  'laugh1', 'laugh3', 'laugh7',
+];
 
 const DISTRICT_NAMES: Record<string, string> = {
   wil: 'Downtown',

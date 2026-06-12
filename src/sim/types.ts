@@ -93,11 +93,11 @@ export type GameEvent =
   | { type: 'busted'; pos: Vec2 }
   | { type: 'ped_killed'; pos: Vec2 }
   | { type: 'ped_scream'; pos: Vec2 }
-  | { type: 'car_enter'; pos: Vec2 }
+  | { type: 'car_enter'; pos: Vec2; jacked?: boolean }
   | { type: 'car_exit'; pos: Vec2 }
   | { type: 'car_crash'; pos: Vec2; speed: number }
   | { type: 'explosion'; pos: Vec2 }
-  | { type: 'pickup'; pos: Vec2 }
+  | { type: 'pickup'; pos: Vec2; kind?: string }
   | { type: 'player_died'; pos: Vec2 }
   /** player earned points — drives the big green world-space popups */
   | { type: 'score'; pos: Vec2; amount: number; label?: string };

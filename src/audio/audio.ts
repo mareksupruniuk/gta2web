@@ -157,6 +157,11 @@ export class AudioManager {
   /** Last trigger time (ctx time) per event key, for rate limiting. */
   private lastPlayed = new Map<string, number>();
 
+  /** Decoded GTA2 announcer vocals (gamedata/audio/vocals/), fetched lazily. */
+  private vocals = new Map<string, AudioBuffer | null>();
+  /** ctx time until which the announcer voice is busy (no self-overlap). */
+  private vocalBusyUntil = 0;
+
   /** Create/resume the AudioContext. Call from a user gesture. Idempotent. */
   init(): void {
     if (typeof AudioContext === 'undefined') return;
@@ -239,6 +244,39 @@ export class AudioManager {
     osc.connect(g);
     osc.start(t);
     osc.stop(t + 0.06);
+  }
+
+  /**
+   * GTA2 announcer voice (BUSTED!, WASTED!, weapon pickups, taunts) from the
+   * original Vocals/*.wav set. One voice: a playing vocal blocks new ones
+   * unless `priority` (so BUSTED always lands). Files fetch+decode lazily.
+   */
+  playVocal(name: string, opts: { gain?: number; priority?: boolean } = {}): void {
+    if (!this.ready() || !this.enabled) return;
+    const ctx = this.ctx!;
+    if (!opts.priority && ctx.currentTime < this.vocalBusyUntil) return;
+    if (!this.vocals.has(name)) {
+      this.vocals.set(name, null); // mark as loading
+      void fetch(`gamedata/audio/vocals/${name}.wav`)
+        .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(`no vocal ${name}`))))
+        .then((ab) => ctx.decodeAudioData(ab))
+        .then((buf) => {
+          this.vocals.set(name, buf);
+          this.playVocal(name, opts);
+        })
+        .catch(() => this.vocals.delete(name));
+      return;
+    }
+    const buf = this.vocals.get(name);
+    if (!buf) return; // still decoding
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    const g = ctx.createGain();
+    g.gain.value = opts.gain ?? 0.85;
+    src.connect(g);
+    g.connect(this.master!);
+    src.start();
+    this.vocalBusyUntil = ctx.currentTime + buf.duration;
   }
 
   /** Play positional sounds for sim events, attenuated by listener distance. */
