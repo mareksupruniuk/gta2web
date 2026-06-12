@@ -602,8 +602,8 @@ export class AudioManager {
         this.nextBirdAt = now + 3 + Math.random() * 7;
       }
       if (now >= this.nextDistantHornAt) {
-        // a far-off honk, quiet and pitch-shifted, denser when streets are busy
-        this.playHorn(0.06 + 0.08 * this.trafficIntensity);
+        // a far-off honk: quiet, muffled, denser when streets are busy
+        this.playHorn(0.10 + 0.12 * this.trafficIntensity, true);
         this.nextDistantHornAt = now + 8 + Math.random() * 14;
       }
     }
@@ -639,10 +639,10 @@ export class AudioManager {
    * loaded yet (caller should fall back to synth). When the polyphony cap is
    * reached the sound is dropped but true is still returned.
    */
-  private playSample(name: SampleName, gain: number, opts: { rate?: number; maxDur?: number } = {}): boolean {
+  private playSample(name: SampleName, gain: number, opts: { rate?: number; maxDur?: number; lowpass?: number } = {}): boolean {
     const buf = this.samples.get(name);
     if (!buf) return false;
-    this.startOneShot(buf, gain, opts.rate ?? 1, opts.maxDur);
+    this.startOneShot(buf, gain, opts.rate ?? 1, opts.maxDur, opts.lowpass);
     return true;
   }
 
@@ -663,7 +663,7 @@ export class AudioManager {
   }
 
   /** Start a one-shot AudioBuffer voice (shared by CC0 and bank samples). */
-  private startOneShot(buf: AudioBuffer, gain: number, rate: number, maxDur?: number): void {
+  private startOneShot(buf: AudioBuffer, gain: number, rate: number, maxDur?: number, lowpass?: number): void {
     const ctx = this.ctx!;
     const natural = buf.duration / rate;
     const dur = maxDur !== undefined ? Math.min(maxDur, natural) : natural;
@@ -674,7 +674,16 @@ export class AudioManager {
     src.playbackRate.value = rate;
     const g = ctx.createGain();
     g.gain.setValueAtTime(Math.max(0.0001, gain), t);
-    src.connect(g);
+    if (lowpass !== undefined) {
+      // muffled (distant) variant
+      const f = ctx.createBiquadFilter();
+      f.type = 'lowpass';
+      f.frequency.value = lowpass;
+      src.connect(f);
+      f.connect(g);
+    } else {
+      src.connect(g);
+    }
     g.connect(this.master!);
     src.start(t);
     if (dur < natural) {
@@ -1051,11 +1060,31 @@ export class AudioManager {
     this.noiseBurst({ t, dur: dur * 0.8, peak: 0.08 * gain * intensity, attack: 0.02, type: 'highpass', freq: 900, q: 0.7 });
   }
 
-  /** Car horn beep with a little random pitch. */
-  private playHorn(gain: number): void {
+  /**
+   * Car horn with traffic-like variation: random pitch per car, and a random
+   * pattern — short "beep", impatient "beep-beep", or a long leaning blast.
+   * `muffled` lowpasses it for far-off honks.
+   */
+  private playHorn(gain: number, muffled = false): void {
     const t = this.ctx!.currentTime;
-    const rate = 0.92 + Math.random() * 0.16;
-    if (this.playSample('horn', 0.55 * gain, { rate })) return;
+    const rate = 0.85 + Math.random() * 0.3;
+    const lowpass = muffled ? 750 : undefined;
+    const pattern = Math.random();
+    if (pattern < 0.45) {
+      // short beep
+      if (this.playSample('horn', 0.55 * gain, { rate, maxDur: 0.28, lowpass })) return;
+    } else if (pattern < 0.75) {
+      // impatient double-beep
+      if (this.playSample('horn', 0.5 * gain, { rate, maxDur: 0.18, lowpass })) {
+        setTimeout(() => {
+          this.playSample('horn', 0.55 * gain, { rate, maxDur: 0.22, lowpass });
+        }, 240);
+        return;
+      }
+    } else {
+      // long leaning blast
+      if (this.playSample('horn', 0.6 * gain, { rate: rate * 0.97, lowpass })) return;
+    }
     if (!this.claimVoice(0.3)) return;
     // Synth fallback: two-tone square stab (classic dual-horn interval).
     this.tone({ t, dur: 0.28, peak: 0.14 * gain, attack: 0.01, type: 'square', freq: 370 * rate });

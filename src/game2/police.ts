@@ -119,6 +119,9 @@ export class PursuitAI {
   private lane: TrafficAI;
   private stuckTime = 0;
   private reverseTime = 0;
+  /** repeated wall-rams in direct mode → temporarily route via roads */
+  private stuckStrikes = 0;
+  private laneFallback = 0;
 
   constructor(car: Car2, dir: ConstructorParameters<typeof TrafficAI>[1]) {
     this.car = car;
@@ -137,8 +140,10 @@ export class PursuitAI {
     const dy = player.pos.y - car.pos.y;
     const d = Math.hypot(dx, dy);
 
-    // Far away: hunt along the road network, junctions biased at the player.
-    if (d > 6) {
+    // Far away (or repeatedly wedged on direct approach): hunt along the
+    // road network, junctions biased at the player.
+    this.laneFallback = Math.max(0, this.laneFallback - dt);
+    if (d > 6 || this.laneFallback > 0) {
       this.lane.pursue = player.pos;
       this.lane.update(dt, map, rng, []);
       return null;
@@ -159,11 +164,24 @@ export class PursuitAI {
       this.stuckTime += dt;
       if (this.stuckTime > 0.6) {
         this.stuckTime = 0;
+        this.stuckStrikes++;
+        // wedged close to an on-foot player: officers continue on foot
+        if (this.stuckStrikes >= 2 && !player.car && d < 4.8 && this.deployCooldown === 0) {
+          this.stuckStrikes = 0;
+          this.deployCooldown = 5;
+          return 'deploy';
+        }
+        // wedged repeatedly: give up the direct line, take the roads
+        if (this.stuckStrikes >= 3) {
+          this.stuckStrikes = 0;
+          this.laneFallback = 3;
+          return null;
+        }
         this.reverseTime = 0.8;
         return null;
       }
     } else {
-      this.stuckTime = 0;
+      this.stuckTime = Math.max(0, this.stuckTime - dt);
     }
 
     // Facing badly wrong: three-point turn (reverse while counter-steering).

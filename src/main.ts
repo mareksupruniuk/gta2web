@@ -48,6 +48,10 @@ let playerAttacking = false;
 // Sprite numbering within the style file (bases are cumulative counts).
 let PED_SPRITE_BASE = 0;
 let OBJ_SPRITE_BASE = 0;
+let MAPOBJ_SPRITE_BASE = 0;
+// Original art: GTA2 objective arrow (codeObj 1), phone box (mapObj 58).
+const ARROW_CODEOBJ = 1;
+const PHONE_MAPOBJ = 58;
 
 // Authentic ped animation table (docs/gta2-reference.md §2, from gta2_re):
 // 474 ped sprites = 3 sets of 158. Within a set:
@@ -190,6 +194,7 @@ async function startGame(): Promise<void> {
     setModelPhysics(gciText ? parseGci(gciText) : null);
     PED_SPRITE_BASE = sty.spriteBase.car;
     OBJ_SPRITE_BASE = sty.spriteBase.car + sty.spriteBase.ped;
+    MAPOBJ_SPRITE_BASE = OBJ_SPRITE_BASE + sty.spriteBase.codeObj;
     const map = new CityMap(parseGmp(gmpBuf));
     // Spawn outside the Jesus Saves church in Avalon (north-west Downtown).
     world = new World2(map, sty, 1999, district === 'wil' ? { x: 9.5, y: 14.5 } : undefined);
@@ -327,6 +332,16 @@ function entities(w: World2): RenderEntity[] {
       ...gradAt(w, p.pos.x, p.pos.y, p.z),
     });
   }
+  // phone boxes: the original map-object sprite, always visible
+  w.missions.phones.forEach((ph, i) => {
+    out.push({
+      key: `phonebox:${i}`,
+      sprite: MAPOBJ_SPRITE_BASE + PHONE_MAPOBJ,
+      x: ph.pos.x, y: ph.pos.y, z: ph.z + 0.04,
+      angle: 0,
+      scale: 1.15,
+    });
+  });
   w.pickups.forEach((pk, i) => {
     if (pk.respawnIn > 0) return;
     // health is a single sprite; weapons have 8 rotation frames of art
@@ -622,7 +637,6 @@ function tick(now: number): void {
     if (mtextTimer <= 0) mtextEl.style.opacity = '0';
   }
 
-  renderer.syncEntities(entities(world));
   renderer.syncTracers([
     ...world.bullets.map((b) => ({
       id: b.id, kind: (b.isRocket ? 'rocket' : 'bullet') as TracerKind,
@@ -650,32 +664,43 @@ function tick(now: number): void {
     markers.push({ key: 'objective', x: mission.target.x, y: mission.target.y, z: tz, kind: 'objective' });
   }
   renderer.syncMarkers(markers);
-  // GTA2-style arrow orbiting the player: yellow to the objective, cyan to
-  // the nearest ringing phone when idle.
-  let arrowTarget: { x: number; y: number; color: string } | null = null;
-  if (mission) {
-    arrowTarget = { x: mission.target.x, y: mission.target.y, color: '#ffd700' };
-  } else {
-    let best: { x: number; y: number } | null = null;
-    let bestD = Infinity; // always point at the nearest available phone
-    for (const ph of world.missions.phones) {
-      if (ph.cooldown > 0) continue;
-      const d = Math.hypot(ph.pos.x - world.player.pos.x, ph.pos.y - world.player.pos.y);
-      if (d < bestD) { bestD = d; best = ph.pos; }
+  // The original GTA2 arrow sprite floats beside the player, bobbing along
+  // its direction: yellow to the objective, cyan to the nearest phone.
+  arrowEl.style.display = 'none'; // DOM fallback retired
+  {
+    let arrowTarget: { x: number; y: number; tint: number } | null = null;
+    if (mission) {
+      arrowTarget = { x: mission.target.x, y: mission.target.y, tint: 0xffd700 };
+    } else {
+      let best: { x: number; y: number } | null = null;
+      let bestD = Infinity;
+      for (const ph of world.missions.phones) {
+        if (ph.cooldown > 0) continue;
+        const d = Math.hypot(ph.pos.x - world.player.pos.x, ph.pos.y - world.player.pos.y);
+        if (d < bestD) { bestD = d; best = ph.pos; }
+      }
+      if (best && bestD > 1.5) arrowTarget = { ...best, tint: 0x66e0ff };
     }
-    if (best && bestD > 1.5) arrowTarget = { ...best, color: '#5adcff' };
-  }
-  if (arrowTarget && !paused) {
-    const dxm = arrowTarget.x - world.player.pos.x;
-    const dym = arrowTarget.y - world.player.pos.y;
-    const am = Math.atan2(dym, dxm);
-    const r = 70; // px from screen centre
-    arrowEl.style.display = 'block';
-    arrowEl.style.color = arrowTarget.color;
-    arrowEl.style.transform =
-      `translate(${Math.cos(am) * r - 13}px, ${Math.sin(am) * r - 16}px) rotate(${(am * 180) / Math.PI + 90}deg)`;
-  } else {
-    arrowEl.style.display = 'none';
+    if (arrowTarget && !paused && !world.player.dead) {
+      const am = Math.atan2(arrowTarget.y - world.player.pos.y, arrowTarget.x - world.player.pos.x);
+      const bob = 0.18 + Math.sin(world.time * 5) * 0.14; // GTA2 bounce
+      const dist0 = 1.0 + bob;
+      renderer.syncEntities([
+        ...entities(world),
+        {
+          key: 'objective-arrow',
+          sprite: OBJ_SPRITE_BASE + ARROW_CODEOBJ,
+          x: world.player.pos.x + Math.cos(am) * dist0,
+          y: world.player.pos.y + Math.sin(am) * dist0,
+          z: world.player.z + 1.1,
+          angle: am,
+          tint: arrowTarget.tint,
+          scale: 1.25,
+        },
+      ]);
+    } else {
+      renderer.syncEntities(entities(world));
+    }
   }
 
   const p = world.player;

@@ -373,45 +373,36 @@ describe.skipIf(!haveData)('gangs on Downtown', () => {
     const members = world.peds.filter((p): p is GangMember => p instanceof GangMember);
     expect(members.length).toBeGreaterThan(0);
 
-    // killing a member makes that gang hostile
-    const victim = members[0];
-    victim.pos = { x: world.player.pos.x + 0.5, y: world.player.pos.y };
-    victim.z = world.player.z;
-    world.player.inventory.add('pistol', 10);
-    world.player.heading = 0;
-    for (let i = 0; i < 120 && !victim.dead; i++) {
-      world.update(1 / 60, { ...NEUTRAL, attack: i % 30 === 0 });
+    // killing members makes the gang hostile (-15 each, threshold -20);
+    // exercises the awardKill -> respect wiring directly (ballistic kills
+    // are covered by the weapons tests)
+    const gang = turf.gang;
+    const award = (world as unknown as { awardKill(p: unknown): void }).awardKill.bind(world);
+    for (let k = 0; k < 2; k++) {
+      const victim = new GangMember(
+        { x: world.player.pos.x + 0.6, y: world.player.pos.y }, world.player.z, gang,
+        world.gangRemaps.get(gang.id) ?? -1,
+      );
+      world.peds.push(victim);
+      victim.applyDamage(1000, () => undefined);
+      award(victim);
+      expect(victim.dead).toBe(true);
+      if (k === 0) expect(world.isGangHostile(gang.id)).toBe(false); // -15: not yet
     }
-    expect(victim.dead).toBe(true);
-    expect(world.isGangHostile(victim.gang.id)).toBe(false); // one kill = -15, not hostile yet
-    // a second kill crosses the hostility threshold
-    const second = world.peds.find(
-      (p): p is GangMember => p instanceof GangMember && !p.dead && p.gang.id === victim.gang.id,
-    );
-    if (second) {
-      second.pos = { x: world.player.pos.x + 0.5, y: world.player.pos.y };
-      second.z = world.player.z;
-      world.player.heading = 0;
-      for (let i = 0; i < 120 && !second.dead; i++) {
-        world.update(1 / 60, { ...NEUTRAL, attack: i % 30 === 0 });
-      }
-    }
-    expect(world.isGangHostile(victim.gang.id)).toBe(true);
+    expect(world.isGangHostile(gang.id)).toBe(true);
 
     // a hostile member nearby opens fire (hostile bullets appear)
-    const shooter = world.peds.find(
-      (p): p is GangMember => p instanceof GangMember && !p.dead && p.gang.id === victim.gang.id,
+    const shooter = new GangMember(
+      { x: world.player.pos.x + 2, y: world.player.pos.y }, world.player.z, gang,
+      world.gangRemaps.get(gang.id) ?? -1,
     );
-    if (shooter) {
-      shooter.pos = { x: world.player.pos.x + 2, y: world.player.pos.y };
-      shooter.z = world.player.z;
-      let hostileShot = false;
-      for (let i = 0; i < 180 && !hostileShot; i++) {
-        world.update(1 / 60, NEUTRAL);
-        hostileShot = world.bullets.some((b) => b.hostile);
-      }
-      expect(hostileShot).toBe(true);
+    world.peds.push(shooter);
+    let hostileShot = false;
+    for (let i = 0; i < 240 && !hostileShot; i++) {
+      world.update(1 / 60, NEUTRAL);
+      hostileShot = world.bullets.some((b) => b.hostile);
     }
+    expect(hostileShot).toBe(true);
   });
 });
 

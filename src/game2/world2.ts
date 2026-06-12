@@ -4,7 +4,7 @@ import { angleDiff, GameEvent, Vec2, dist } from '../sim/types';
 import { Car2 } from './car2';
 import { CityMap } from './citymap';
 import { panicNearby, Ped2, PED_RADIUS } from './ped2';
-import { GangId, GangMember, gangTurfs, GangTurf, turfAt } from './gangs';
+import { GangId, GangMember, gangTurfs, GangTurf, resolveGangRemaps, turfAt } from './gangs';
 import { MissionManager } from './missions';
 import { Cop, COP_CAR_MODEL, policeCarModel, PursuitAI } from './police';
 import { TrafficAI, dirAngle, dirNameFromArrows } from './traffic2';
@@ -12,14 +12,18 @@ import { Bullet, Flame, Inventory, Thrown, WEAPONS } from './weapons2';
 import { HEAT_PER, Wanted } from './wanted';
 
 export const PLAYER_RADIUS = 0.14;
+/** uncommon working vehicles mixed into traffic (model ids from nyc.gci) */
+const RARE_TRAFFIC_MODELS = [11, 17, 21, 23, 27, 32, 34, 41]; // bus, firetruck, garbage, hotdog, icecream, limo, medicar, pickup
+/** tank model (army joins at 6 stars) */
+const TANK_MODEL = 54;
 // authentic player run speed: 0.0625 tiles/tick @ 30fps (docs §8)
 const WALK_SPEED = 1.875;
 const BACK_SPEED = 0.9;
 const TURN_RATE = 3.8;
 const ENTER_CAR_DIST = 0.95;
 
-const PED_TARGET = 26;
-const CAR_TARGET = 12;
+const PED_TARGET = 38;
+const CAR_TARGET = 16; // the original's dummy-traffic cap
 const SPAWN_NEAR = 7; // min spawn distance from player (blocks)
 const SPAWN_FAR = 15;
 const DESPAWN = 22;
@@ -146,6 +150,8 @@ export class World2 {
   turfs: GangTurf[] = [];
   /** gang respect: -100 (hated) .. 100 (allied); hostile at <= -20 */
   gangRespect = new Map<GangId, number>();
+  /** per-style member colours, sampled at load */
+  gangRemaps = new Map<GangId, number>();
   /** phone missions */
   missions = new MissionManager();
   /** entity ids exempt from distance despawn (mission targets) */
@@ -177,6 +183,8 @@ export class World2 {
     this.roadSpawns = spawns.roads;
     this.pavementSpawns = spawns.pavements;
     this.turfs = gangTurfs(map.gmp.zones);
+    const present = [...new Map(this.turfs.map((t) => [t.gang.id, t.gang])).values()];
+    this.gangRemaps = resolveGangRemaps(sty, present);
 
     this.placePickups();
     this.missions.init(this);
@@ -298,7 +306,8 @@ export class World2 {
     // inside gang turf, most peds on the street are members in colours
     const turf = turfAt(this.turfs, s);
     if (turf && this.rng.chance(0.55)) {
-      this.peds.push(new GangMember({ x: s.x, y: s.y }, s.z, turf.gang));
+      const remap = this.gangRemaps.get(turf.gang.id) ?? -1;
+      this.peds.push(new GangMember({ x: s.x, y: s.y }, s.z, turf.gang, remap));
       return;
     }
     const remapCount = this.sty.palBase.pedRemap;
@@ -318,7 +327,16 @@ export class World2 {
     }
     const dir = dirNameFromArrows(this.map.arrowsAt(s.x, s.y, s.z), this.rng);
     if (!dir) return;
-    const info = this.rng.pick(this.usableCars);
+    // Mostly RECY models; occasionally a working vehicle (fire truck, bus,
+    // garbage truck, hot dog / ice-cream van, limo, medicar, pickup).
+    let info: CarInfo | undefined;
+    if (this.rng.chance(0.12)) {
+      const rare = RARE_TRAFFIC_MODELS
+        .map((m) => this.sty.cars.find((c) => c.model === m))
+        .filter((c): c is CarInfo => !!c);
+      if (rare.length > 0) info = this.rng.pick(rare);
+    }
+    info ??= this.rng.pick(this.usableCars);
     const remap = info.remaps.length > 0 ? this.rng.pick(info.remaps) : -1;
     const car = new Car2(info, remap, { x: s.x, y: s.y }, s.z, dirAngle(dir));
     this.cars.push(car);
@@ -969,8 +987,9 @@ export class World2 {
   }
 
   private copInfo(): CarInfo | null {
-    // force escalation: police → FBI cars → army jeeps
-    const model = policeCarModel(this.wanted.level);
+    // force escalation: police → FBI cars → army jeeps + tanks at six stars
+    let model = policeCarModel(this.wanted.level);
+    if (this.wanted.level >= 6 && this.rng.chance(0.4)) model = TANK_MODEL;
     return (
       this.sty.cars.find((c) => c.model === model) ??
       this.sty.cars.find((c) => c.model === COP_CAR_MODEL) ??

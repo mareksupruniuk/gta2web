@@ -1,34 +1,76 @@
 import { Rng } from '../sim/rng';
 import { GameEvent, Vec2, dist } from '../sim/types';
+import { Sty } from '../gta2/sty';
 import { CityMap } from './citymap';
 import { Ped2 } from './ped2';
 import { Bullet, WEAPONS } from './weapons2';
 import type { Player2 } from './world2';
 
 /**
- * GTA2 gangs from the map's ZONE data (type 14). Downtown: Yakuza (blue),
- * Loonies (green), Zaibatsu (dark). Members patrol their turf armed; hurting
- * a gang turns it hostile — its members open fire on sight inside the turf.
- * Remaps chosen by sampling the style's ped remap palettes for the gang
- * colours (scripts in repo history).
+ * GTA2 gangs from the map's ZONE data (type 14), all three districts:
+ * Downtown (Yakuza/Loonies/Zaibatsu), Residential (Rednecks/SRS Scientists/
+ * Alma Mater/Zaibatsu), Industrial (Hare Krishna/Russian Mafia/Zaibatsu).
+ * Members patrol their turf armed; hurting a gang turns it hostile.
+ * Member colours are resolved per style file at load by sampling the ped
+ * remap palettes for each gang's signature colour (resolveGangRemaps).
  */
 
-export type GangId = 'yakuza' | 'loonies' | 'zaibatsu';
+export type GangId = string;
 
 export interface GangDef {
   id: GangId;
   name: string;
-  /** ped remap (virtual, ped remap area) for member colours */
-  remap: number;
-  /** matches this gang's ZONE names (e.g. "yakuzagang") */
+  /** matches this gang's ZONE names ("yakuzagang", "zaibgang", ...) */
   zoneMatch: RegExp;
+  /** signature clothing colour to look for in the ped remap palettes */
+  color: [number, number, number];
 }
 
 export const GANGS: GangDef[] = [
-  { id: 'yakuza', name: 'Yakuza', remap: 0, zoneMatch: /yakuza/i },
-  { id: 'loonies', name: 'Loonies', remap: 16, zoneMatch: /loonie/i },
-  { id: 'zaibatsu', name: 'Zaibatsu', remap: 13, zoneMatch: /zaibatsu/i },
+  { id: 'yakuza', name: 'Yakuza', zoneMatch: /yakuza/i, color: [50, 65, 90] },
+  { id: 'loonies', name: 'Loonies', zoneMatch: /loonie/i, color: [60, 105, 65] },
+  { id: 'zaibatsu', name: 'Zaibatsu', zoneMatch: /zaib/i, color: [40, 35, 50] },
+  { id: 'rednecks', name: 'Rednecks', zoneMatch: /redn/i, color: [115, 45, 28] },
+  { id: 'scientists', name: 'SRS Scientists', zoneMatch: /scie/i, color: [125, 120, 115] },
+  { id: 'almamater', name: 'Alma Mater', zoneMatch: /alma/i, color: [95, 70, 45] },
+  { id: 'krishna', name: 'Hare Krishna', zoneMatch: /kris/i, color: [145, 85, 30] },
+  { id: 'russians', name: 'Russian Mafia', zoneMatch: /russ/i, color: [85, 85, 95] },
 ];
+
+/**
+ * Pick a distinct ped remap per gang whose average sprite colour is closest
+ * to the gang's signature colour. Sampled from the style's civilian walk
+ * sprite so it adapts to each district's palette set.
+ */
+export function resolveGangRemaps(sty: Sty, gangs: GangDef[]): Map<GangId, number> {
+  const out = new Map<GangId, number>();
+  const sprite = sty.spriteBase.car + 158; // civilian set, walk frame 0
+  const n = sty.palBase.pedRemap;
+  const avgs: [number, number, number][] = [];
+  for (let r = 0; r < n; r++) {
+    const { w, h, data } = sty.spriteRGBA(sprite, sty.pedRemapPalette(r));
+    let R = 0, G = 0, B = 0, c = 0;
+    for (let i = 0; i < w * h; i++) {
+      if (data[i * 4 + 3] < 128) continue;
+      R += data[i * 4]; G += data[i * 4 + 1]; B += data[i * 4 + 2]; c++;
+    }
+    avgs.push(c ? [R / c, G / c, B / c] : [0, 0, 0]);
+  }
+  const taken = new Set<number>();
+  for (const g of gangs) {
+    let best = 0;
+    let bestD = Infinity;
+    for (let r = 0; r < avgs.length; r++) {
+      if (taken.has(r)) continue;
+      const [ar, ag, ab] = avgs[r];
+      const d = (ar - g.color[0]) ** 2 + (ag - g.color[1]) ** 2 + (ab - g.color[2]) ** 2;
+      if (d < bestD) { bestD = d; best = r; }
+    }
+    taken.add(best);
+    out.set(g.id, best);
+  }
+  return out;
+}
 
 export interface GangTurf {
   gang: GangDef;
@@ -68,8 +110,8 @@ export class GangMember extends Ped2 {
   shooting = false;
   private shootCooldown = 0;
 
-  constructor(pos: Vec2, z: number, gang: GangDef) {
-    super(pos, z, gang.remap);
+  constructor(pos: Vec2, z: number, gang: GangDef, remap: number) {
+    super(pos, z, remap);
     this.gang = gang;
     this.health = 30; // tougher than civilians
   }

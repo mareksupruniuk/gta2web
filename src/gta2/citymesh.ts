@@ -190,61 +190,55 @@ export function buildChunkGeometry(
             );
           }
         } else {
-          if (left.tile !== 0) {
-            const uv = faceUV(atlas, left);
-            pushQuad(
-              pick(left),
-              [
-                [bx, by, zNW],
-                [bx, by + 1, zSW],
-                [bx, by + 1, z],
-                [bx, by, z],
-              ],
-              uv,
-              WALL_SHADE_X,
-            );
+          // X walls (left/right). Spec: a FLAT side is a thin two-sided face
+          // at its own edge whose reverse shows the OPPOSITE side's graphic —
+          // and the opposite face is NOT drawn at its own edge (that was the
+          // misplaced-fence bug). Both-flat keeps a face at each edge.
+          const leftAt = (x: number, f: Face): void => {
+            const uv = faceUV(atlas, f);
+            pushQuad(pick(f), [
+              [x, by, zNW], [x, by + 1, zSW], [x, by + 1, z], [x, by, z],
+            ], uv, WALL_SHADE_X);
+          };
+          const rightAt = (x: number, f: Face): void => {
+            const uv = faceUV(atlas, f);
+            pushQuad(pick(f), [
+              [x, by + 1, zSE], [x, by, zNE], [x, by, z], [x, by + 1, z],
+            ], uv, WALL_SHADE_X);
+          };
+          if (left.flat && !right.flat) {
+            if (left.tile !== 0) leftAt(bx, left);
+            if (right.tile !== 0) rightAt(bx + 0.006, right); // reverse side
+          } else if (right.flat && !left.flat) {
+            if (right.tile !== 0) rightAt(bx + 1, right);
+            if (left.tile !== 0) leftAt(bx + 1 - 0.006, left); // reverse side
+          } else {
+            if (left.tile !== 0) leftAt(bx, left);
+            if (right.tile !== 0) rightAt(bx + 1, right);
           }
-          if (right.tile !== 0) {
-            const uv = faceUV(atlas, right);
-            pushQuad(
-              pick(right),
-              [
-                [bx + 1, by + 1, zSE],
-                [bx + 1, by, zNE],
-                [bx + 1, by, z],
-                [bx + 1, by + 1, z],
-              ],
-              uv,
-              WALL_SHADE_X,
-            );
-          }
-          if (top.tile !== 0) {
-            const uv = faceUV(atlas, top);
-            pushQuad(
-              pick(top),
-              [
-                [bx + 1, by, zNE],
-                [bx, by, zNW],
-                [bx, by, z],
-                [bx + 1, by, z],
-              ],
-              uv,
-              WALL_SHADE_Y,
-            );
-          }
-          if (bottom.tile !== 0) {
-            const uv = faceUV(atlas, bottom);
-            pushQuad(
-              pick(bottom),
-              [
-                [bx, by + 1, zSW],
-                [bx + 1, by + 1, zSE],
-                [bx + 1, by + 1, z],
-                [bx, by + 1, z],
-              ],
-              uv,
-              WALL_SHADE_Y,
-            );
+
+          // Y walls (top/bottom), same pairing rule.
+          const topAt = (y: number, f: Face): void => {
+            const uv = faceUV(atlas, f);
+            pushQuad(pick(f), [
+              [bx + 1, y, zNE], [bx, y, zNW], [bx, y, z], [bx + 1, y, z],
+            ], uv, WALL_SHADE_Y);
+          };
+          const bottomAt = (y: number, f: Face): void => {
+            const uv = faceUV(atlas, f);
+            pushQuad(pick(f), [
+              [bx, y, zSW], [bx + 1, y, zSE], [bx + 1, y, z], [bx, y, z],
+            ], uv, WALL_SHADE_Y);
+          };
+          if (top.flat && !bottom.flat) {
+            if (top.tile !== 0) topAt(by, top);
+            if (bottom.tile !== 0) bottomAt(by + 0.006, bottom); // reverse side
+          } else if (bottom.flat && !top.flat) {
+            if (bottom.tile !== 0) bottomAt(by + 1, bottom);
+            if (top.tile !== 0) topAt(by + 1 - 0.006, top); // reverse side
+          } else {
+            if (top.tile !== 0) topAt(by, top);
+            if (bottom.tile !== 0) bottomAt(by + 1, bottom);
           }
         }
       }

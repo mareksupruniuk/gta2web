@@ -114,8 +114,13 @@ export class CityRenderer {
   private markers = new Map<string, THREE.Mesh>();
   private markerTime = 0;
 
+  /** original blood-splat sprites (codeObj 2-9) */
+  private bloodSprites: number[] = [];
+
   private constructor(mount: HTMLElement, sty: Sty) {
     this.sty = sty;
+    const codeObjBase = sty.spriteBase.car + sty.spriteBase.ped;
+    for (let i = 2; i <= 9; i++) this.bloodSprites.push(codeObjBase + i);
     this.mount = mount;
     this.three = new THREE.WebGLRenderer({ antialias: false });
     this.three.setPixelRatio(Math.min(2, window.devicePixelRatio));
@@ -383,6 +388,29 @@ export class CityRenderer {
         grad.addColorStop(0.7, 'rgba(230,70,10,0.7)');
         grad.addColorStop(1, 'rgba(180,30,0,0)');
         break;
+      case 'fire0':
+      case 'fire1':
+      case 'fire2': {
+        // irregular flame: overlapping hot blobs, brighter near the base
+        for (let i = 0; i < 10; i++) {
+          const a = Math.random() * Math.PI * 2;
+          const d = Math.random() * 16;
+          const r = 5 + Math.random() * 11;
+          const bg = ctx.createRadialGradient(
+            32 + Math.cos(a) * d, 34 + Math.sin(a) * d * 0.7, 1,
+            32 + Math.cos(a) * d, 34 + Math.sin(a) * d * 0.7, r,
+          );
+          const hot = Math.random();
+          bg.addColorStop(0, hot > 0.6 ? 'rgba(255,250,210,0.9)' : 'rgba(255,180,40,0.85)');
+          bg.addColorStop(0.6, 'rgba(255,110,15,0.55)');
+          bg.addColorStop(1, 'rgba(200,40,0,0)');
+          ctx.fillStyle = bg;
+          ctx.fillRect(0, 0, 64, 64);
+        }
+        tex = new THREE.CanvasTexture(c);
+        this.fxTex.set(kind, tex);
+        return tex;
+      }
       case 'bloodspray':
         grad.addColorStop(0, 'rgba(190,25,25,1)');
         grad.addColorStop(0.6, 'rgba(150,15,15,0.8)');
@@ -437,15 +465,7 @@ export class CityRenderer {
 
   spawnFx(fx: FxSpawn): void {
     if (fx.kind === 'blood') {
-      const mesh = this.flatQuad(fx, 0.45, 'blood', 0.002);
-      mesh.rotation.z = Math.random() * Math.PI * 2;
-      this.scene.add(mesh);
-      this.decals.push(mesh);
-      if (this.decals.length > 200) {
-        const old = this.decals.shift()!;
-        this.scene.remove(old);
-        disposeMesh(old);
-      }
+      this.addBloodDecal(fx, 0.9 + Math.random() * 0.5);
       return;
     }
     if (fx.kind === 'explosion') {
@@ -454,7 +474,7 @@ export class CityRenderer {
         const a = (i / 9) * Math.PI * 2;
         const sp = 0.5 + Math.random() * 1.6;
         this.addEffect(fx, 'explosion', 0.45 + Math.random() * 0.3, {
-          size: 0.6, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, grow: 2.4,
+          size: 0.6, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, grow: 2.4, additive: true,
         });
       }
       for (let i = 0; i < 6; i++) {
@@ -473,39 +493,57 @@ export class CityRenderer {
           { x: fx.x, y: fx.y, z: fx.z + 0.1 + Math.random() * 0.3 },
           'debris',
           0.45 + Math.random() * 0.45,
-          { size: 0.16 + Math.random() * 0.1, vx, vy, rot: -a + Math.PI / 2 },
+          { size: 0.16 + Math.random() * 0.1, vx, vy, rot: -a + Math.PI / 2, additive: true },
         );
       }
       return;
     }
     if (fx.kind === 'bloodspray') {
-      // GTA2-style blood spurt: a burst of small droplets + a small stain.
-      for (let i = 0; i < 6; i++) {
+      // GTA2-style blood spurt: a burst of droplets + a small original splat.
+      for (let i = 0; i < 7; i++) {
         const a = Math.random() * Math.PI * 2;
-        const sp = 0.4 + Math.random() * 1.2;
-        this.addEffect(fx, 'bloodspray', 0.15 + Math.random() * 0.15, {
-          size: 0.07 + Math.random() * 0.06,
+        const sp = 0.4 + Math.random() * 1.4;
+        this.addEffect(fx, 'bloodspray', 0.16 + Math.random() * 0.16, {
+          size: 0.06 + Math.random() * 0.07,
           vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
         });
       }
-      if (Math.random() < 0.5) {
-        const mesh = this.flatQuad(fx, 0.2 + Math.random() * 0.15, 'blood', 0.002);
-        mesh.rotation.z = Math.random() * Math.PI * 2;
-        this.scene.add(mesh);
-        this.decals.push(mesh);
-      }
+      if (Math.random() < 0.6) this.addBloodDecal(fx, 0.35 + Math.random() * 0.25);
       return;
     }
     if (fx.kind === 'fire') {
-      this.addEffect(fx, 'fire', 0.3 + Math.random() * 0.2, {
-        size: 0.25 + Math.random() * 0.15, grow: 1.2,
+      // flickering multi-shape flames, additive so overlaps glow
+      this.addEffect(fx, `fire${Math.floor(Math.random() * 3)}`, 0.28 + Math.random() * 0.2, {
+        size: 0.26 + Math.random() * 0.16, grow: 1.3,
         vx: (Math.random() - 0.5) * 0.3, vy: (Math.random() - 0.5) * 0.3,
+        additive: true,
       });
       return;
     }
     const size = fx.kind === 'muzzle' ? 0.38 : fx.kind === 'spark' ? 0.16 : fx.kind === 'dust' ? 0.22 : 0.45;
     const ttl = fx.kind === 'muzzle' ? 0.07 : fx.kind === 'spark' ? 0.12 : fx.kind === 'dust' ? 0.3 : 0.5;
-    this.addEffect(fx, fx.kind, ttl, { size, grow: fx.kind === 'smoke' ? 1.5 : fx.kind === 'dust' ? 1.8 : 0.4 });
+    const additive = fx.kind === 'muzzle' || fx.kind === 'spark' || fx.kind === 'electro';
+    this.addEffect(fx, fx.kind, ttl, { size, grow: fx.kind === 'smoke' ? 1.5 : fx.kind === 'dust' ? 1.8 : 0.4, additive });
+  }
+
+  /** A permanent blood splat from the original art, randomly rotated. */
+  private addBloodDecal(at: { x: number; y: number; z: number }, scale: number): void {
+    const sprite = this.bloodSprites[Math.floor(Math.random() * this.bloodSprites.length)];
+    const entry = this.sty.sprites[sprite];
+    if (!entry) return;
+    const tex = this.spriteTexture(sprite);
+    const geo = new THREE.PlaneGeometry((entry.w / 64) * scale, (entry.h / 64) * scale);
+    const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(at.x, -at.y, at.z + 0.012);
+    mesh.rotation.z = Math.random() * Math.PI * 2;
+    this.scene.add(mesh);
+    this.decals.push(mesh);
+    if (this.decals.length > 200) {
+      const old = this.decals.shift()!;
+      this.scene.remove(old);
+      disposeMesh(old);
+    }
   }
 
   private tracerTexture(kind: TracerKind): THREE.Texture {
@@ -619,23 +657,24 @@ export class CityRenderer {
         },
         'electro',
         0.09,
-        { size: 0.12 + Math.random() * 0.08 },
+        { size: 0.12 + Math.random() * 0.08, additive: true },
       );
     }
   }
 
-  private flatQuad(at: { x: number; y: number; z: number }, size: number, kind: string, lift: number): THREE.Mesh {
+  private flatQuad(at: { x: number; y: number; z: number }, size: number, kind: string, lift: number, additive = false): THREE.Mesh {
     const geo = new THREE.PlaneGeometry(size, size);
     const mat = new THREE.MeshBasicMaterial({
       map: this.effectTexture(kind), transparent: true, depthWrite: false,
+      blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending,
     });
     const mesh = new THREE.Mesh(geo, mat);
     mesh.position.set(at.x, -at.y, at.z + lift);
     return mesh;
   }
 
-  private addEffect(at: { x: number; y: number; z: number }, kind: string, ttl: number, opts: { size: number; vx?: number; vy?: number; grow?: number; rot?: number }): void {
-    const mesh = this.flatQuad(at, opts.size, kind, 0.05 + Math.random() * 0.02);
+  private addEffect(at: { x: number; y: number; z: number }, kind: string, ttl: number, opts: { size: number; vx?: number; vy?: number; grow?: number; rot?: number; additive?: boolean }): void {
+    const mesh = this.flatQuad(at, opts.size, kind, 0.05 + Math.random() * 0.02, opts.additive);
     if (opts.rot !== undefined) mesh.rotation.z = opts.rot;
     this.scene.add(mesh);
     this.effects.push({
