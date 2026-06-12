@@ -26,6 +26,9 @@ export class Ped2 {
   onFire = false;
   /** died from fire → charred corpse sprite */
   burned = false;
+  /** vaulting over a car (GTA2 peds hop over hoods) */
+  hopping = false;
+  private hopVz = 0;
   private fireTime = 0;
   /** ped colour remap (virtual, relative to ped remap area), -1 = default */
   remap: number;
@@ -49,6 +52,13 @@ export class Ped2 {
     this.state = 'flee';
     this.fleeFrom = { ...threat };
     this.fleeTimer = 4;
+  }
+
+  /** Vault over a blocking car: a small jump that carries the ped across. */
+  startHop(): void {
+    if (this.dead || this.hopping) return;
+    this.hopping = true;
+    this.hopVz = 3.4;
   }
 
   ignite(emit: (e: GameEvent) => void): void {
@@ -106,13 +116,25 @@ export class Ped2 {
       }
     }
 
-    const nx = this.pos.x + Math.cos(this.heading) * speed * dt;
-    const ny = this.pos.y + Math.sin(this.heading) * speed * dt;
+    const hopBoost = this.hopping ? 1.4 : 1;
+    const nx = this.pos.x + Math.cos(this.heading) * speed * hopBoost * dt;
+    const ny = this.pos.y + Math.sin(this.heading) * speed * hopBoost * dt;
     if (map.canMoveBody(this.pos.x, this.pos.y, nx, this.pos.y, this.z, PED_RADIUS, 0.6)) this.pos.x = nx;
     else this.dirTimer = 0;
     if (map.canMoveBody(this.pos.x, this.pos.y, this.pos.x, ny, this.z, PED_RADIUS, 0.6)) this.pos.y = ny;
     else this.dirTimer = 0;
     const g = map.groundZ(this.pos.x, this.pos.y, this.z + 0.55);
+    if (this.hopping) {
+      // ballistic vault; land when falling onto the ground
+      this.hopVz -= 9.5 * dt;
+      this.z += this.hopVz * dt;
+      if (g !== null && this.hopVz < 0 && this.z <= g) {
+        this.z = g;
+        this.hopping = false;
+        this.hopVz = 0;
+      }
+      return;
+    }
     if (g !== null) this.z = g < this.z - 0.05 ? Math.max(g, this.z - 4 * dt) : g;
   }
 

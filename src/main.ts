@@ -389,6 +389,8 @@ function entities(w: World2): RenderEntity[] {
       frame = ped.burned ? ANIM.burnedCorpse : ANIM.corpses[ped.id % ANIM.corpses.length];
     } else if ((ped instanceof Cop || ped instanceof GangMember) && ped.shooting) {
       frame = ANIM.firing;
+    } else if (ped.hopping) {
+      frame = ANIM.jump.base + 4; // mid-vault pose
     } else if (ped.state === 'flee' || isCop) {
       frame = ANIM.run.base + (Math.floor(ped.animTime * 12) % ANIM.run.frames);
     } else if (ped instanceof GangMember) {

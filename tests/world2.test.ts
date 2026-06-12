@@ -448,3 +448,51 @@ describe.skipIf(!haveData)('phone missions on Downtown', () => {
     expect(phone.cooldown).toBeGreaterThan(0);
   });
 });
+
+describe.skipIf(!haveData)('vaulting and wrecks', () => {
+  const map = haveData ? new CityMap(parseGmp(load('wil.gmp'))) : (null as unknown as CityMap);
+  const sty = haveData ? parseSty(load('wil.sty')) : (null as unknown as ReturnType<typeof parseSty>);
+
+  it('the player can jump over a parked car', () => {
+    const world = new World2(map, sty, 31);
+    const p = world.player;
+    const car = world.cars.find((c) => !c.driver)!;
+    // stand just west of the car, facing east, car directly ahead
+    car.pos = { x: p.pos.x + 0.9, y: p.pos.y };
+    car.z = p.z;
+    car.heading = 0;
+    car.vel = { x: 0, y: 0 };
+    p.heading = 0;
+    let crossed = false;
+    for (let i = 0; i < 120 && !crossed; i++) {
+      world.update(1 / 60, { ...NEUTRAL, moveY: -1, jump: i === 2 });
+      crossed = p.pos.x > car.pos.x + car.length / 2 + 0.1;
+    }
+    expect(crossed).toBe(true);
+  });
+
+  it('wrecks block moving cars instead of being ghosts', () => {
+    const world = new World2(map, sty, 32);
+    const wreck = world.cars[0];
+    const mover = world.cars[1];
+    world.drivers = world.drivers.filter((d) => d.car !== wreck && d.car !== mover);
+    wreck.driver = null;
+    wreck.exploded = true;
+    wreck.vel = { x: 0, y: 0 };
+    wreck.pos = { x: 100.5, y: 100.5 };
+    wreck.heading = 0;
+    mover.driver = 'player';
+    mover.heading = 0;
+    mover.pos = { x: 97.5, y: 100.5 };
+    mover.vel = { x: 4, y: 0 };
+    world.player.car = mover;
+    for (let i = 0; i < 90; i++) {
+      mover.controls = { throttle: 1, steer: 0, handbrake: false };
+      world.update(1 / 60, NEUTRAL);
+      world.drainEvents();
+    }
+    // the mover must not have passed through the wreck
+    expect(mover.pos.x).toBeLessThan(wreck.pos.x - (mover.length + wreck.length) / 2 + 0.45);
+    expect(wreck.pos.x).toBeCloseTo(100.5, 0); // the wreck never moved
+  });
+});

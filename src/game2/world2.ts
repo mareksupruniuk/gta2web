@@ -398,7 +398,7 @@ export class World2 {
       }
     }
 
-    const obstacles: Vec2[] = this.cars.filter((c) => !c.exploded).map((c) => c.pos);
+    const obstacles: Vec2[] = this.cars.map((c) => c.pos); // wrecks block too
     if (!player.car) obstacles.push(player.pos);
     for (const d of this.drivers) {
       d.update(dt, this.map, this.rng, obstacles.filter((p) => p !== d.car.pos));
@@ -418,9 +418,17 @@ export class World2 {
       }
       if (ped.dead) continue;
       for (const car of this.cars) {
-        // fast cars run peds over (handled below); slow ones are solid
+        // fast cars run peds over (handled below); slow ones are solid —
+        // unless the ped vaults over the hood like in the original
+        if (ped.hopping && ped.z > car.z + 0.2) continue;
         if (car.speed() < 0.6 && Math.abs(car.z - ped.z) < 0.8) {
+          const ox = ped.pos.x;
+          const oy = ped.pos.y;
           pushOutOfCar(ped.pos, PED_RADIUS, car);
+          if (!ped.hopping && (ped.pos.x !== ox || ped.pos.y !== oy)) {
+            // blocked by a car: cops always vault, civilians usually
+            if (ped.isCop || this.rng.chance(0.35)) ped.startHop();
+          }
         }
       }
     }
@@ -472,6 +480,7 @@ export class World2 {
 
     // Cars are solid: don't let the player stand inside one.
     for (const car of this.cars) {
+      if (p.vz !== 0 && p.z > car.z + 0.25) continue; // jumping clears the roof
       if (Math.abs(car.z - p.z) < 0.8) pushOutOfCar(p.pos, PLAYER_RADIUS, car);
     }
   }
@@ -643,11 +652,11 @@ export class World2 {
   private resolveCarCollisions(): void {
     for (let i = 0; i < this.cars.length; i++) {
       const a = this.cars[i];
-      if (a.exploded) continue;
       const aCircles = a.collisionCircles();
       for (let j = i + 1; j < this.cars.length; j++) {
         const b = this.cars[j];
-        if (b.exploded || Math.abs(a.z - b.z) > 0.8) continue;
+        // wrecks are solid obstacles; only skip wreck-on-wreck pairs
+        if ((a.exploded && b.exploded) || Math.abs(a.z - b.z) > 0.8) continue;
         if (dist(a.pos, b.pos) > (a.length + b.length) * 0.6) continue;
         // Two-circle model per car: find the deepest overlapping pair.
         const bCircles = b.collisionCircles();
@@ -669,9 +678,10 @@ export class World2 {
         }
         if (overlap <= 0) continue;
         // Mass-weighted response (gci): the heavier car shunts the lighter.
+        // A wreck never moves — the living car takes the full separation.
         const ma = a.handling.mass;
         const mb = b.handling.mass;
-        const aShare = mb / (ma + mb);
+        const aShare = a.exploded ? 0 : b.exploded ? 1 : mb / (ma + mb);
         a.pos.x -= nx * overlap * aShare;
         a.pos.y -= ny * overlap * aShare;
         b.pos.x += nx * overlap * (1 - aShare);
@@ -679,8 +689,8 @@ export class World2 {
         const relSpeed = Math.hypot(a.vel.x - b.vel.x, a.vel.y - b.vel.y);
         if (relSpeed > 1.8) {
           const dmg = relSpeed * 1.4;
-          a.applyDamage(dmg * 2 * aShare * a.handling.antiStrength, this.emit);
-          b.applyDamage(dmg * 2 * (1 - aShare) * b.handling.antiStrength, this.emit);
+          if (!a.exploded) a.applyDamage(dmg * 2 * Math.max(aShare, b.exploded ? 1 : 0) * a.handling.antiStrength, this.emit);
+          if (!b.exploded) b.applyDamage(dmg * 2 * Math.max(1 - aShare, a.exploded ? 1 : 0) * b.handling.antiStrength, this.emit);
           this.emit({
             type: 'car_crash',
             pos: { x: (a.pos.x + b.pos.x) / 2, y: (a.pos.y + b.pos.y) / 2 },
@@ -705,6 +715,7 @@ export class World2 {
       if (speed < 0.6) continue;
       for (const ped of this.peds) {
         if (ped.dead || Math.abs(ped.z - car.z) > 0.8) continue;
+        if (ped.hopping && ped.z > car.z + 0.25) continue; // mid-vault
         if (car.containsPoint(ped.pos.x, ped.pos.y, PED_RADIUS)) {
           ped.applyDamage(100, this.emit);
           if (car.driver === 'player') this.awardKill(ped);
@@ -712,6 +723,7 @@ export class World2 {
       }
       const p = this.player;
       if (car === this.exitedCar && this.exitGrace > 0) continue;
+      if (p.vz !== 0 && p.z > car.z + 0.25) continue; // jumping over the car
       if (!p.car && !p.dead && Math.abs(p.z - car.z) < 0.8 && car.containsPoint(p.pos.x, p.pos.y, PLAYER_RADIUS)) {
         p.applyDamage(speed * 14);
         this.emit({ type: 'hit', pos: { ...p.pos } });
