@@ -396,24 +396,23 @@ export class CityRenderer {
         const halfLen = entry2.h / 128;
         const halfW = entry2.w / 128;
         const group = new THREE.Group();
-        const beamMat = new THREE.MeshBasicMaterial({
+        // one soft pool just past the bumper, like the original's dusk look
+        const poolMat = new THREE.MeshBasicMaterial({
           map: this.effectTexture('headlight'), transparent: true,
+          depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0.5,
+        });
+        const poolW = Math.max(0.7, halfW * 2 * 1.45);
+        const pool = new THREE.Mesh(new THREE.PlaneGeometry(poolW, 0.85), poolMat);
+        pool.rotation.z = -Math.PI / 2; // texture base (bright) toward the car
+        pool.position.set(halfLen + 0.38, 0, 0);
+        group.add(pool);
+        const tailMat = new THREE.MeshBasicMaterial({
+          map: this.effectTexture('taillight'), transparent: true,
           depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0.55,
         });
         for (const side of [-1, 1]) {
-          const beam = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 1.5), beamMat);
-          // beam texture base at canvas-bottom; rotate so the base meets the bumper
-          beam.rotation.z = -Math.PI / 2;
-          beam.position.set(halfLen + 0.68, side * halfW * 0.55, 0);
-          group.add(beam);
-        }
-        const tailMat = new THREE.MeshBasicMaterial({
-          map: this.effectTexture('taillight'), transparent: true,
-          depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0.7,
-        });
-        for (const side of [-1, 1]) {
-          const dot = new THREE.Mesh(new THREE.PlaneGeometry(0.17, 0.17), tailMat);
-          dot.position.set(-halfLen + 0.02, side * halfW * 0.6, 0);
+          const dot = new THREE.Mesh(new THREE.PlaneGeometry(0.14, 0.14), tailMat);
+          dot.position.set(-halfLen + 0.03, side * halfW * 0.58, 0);
           group.add(dot);
         }
         group.renderOrder = 3;
@@ -610,28 +609,29 @@ export class CityRenderer {
         return tex;
       }
       case 'headlight': {
-        // forward light cone: narrow bright base widening into a soft pool
-        const lg = ctx.createLinearGradient(32, 64, 32, 0);
-        lg.addColorStop(0, 'rgba(255,250,220,0.85)');
-        lg.addColorStop(0.45, 'rgba(255,245,200,0.4)');
-        lg.addColorStop(1, 'rgba(255,240,180,0)');
+        // original-style pool: a soft ellipse of light just ahead of the
+        // bumper, brightest at its base (canvas bottom), no long cone
+        const lg = ctx.createRadialGradient(32, 56, 3, 32, 44, 40);
+        lg.addColorStop(0, 'rgba(255,248,215,0.75)');
+        lg.addColorStop(0.45, 'rgba(255,242,195,0.35)');
+        lg.addColorStop(1, 'rgba(255,235,175,0)');
         ctx.fillStyle = lg;
-        ctx.beginPath();
-        ctx.moveTo(22, 64);
-        ctx.lineTo(42, 64);
-        ctx.lineTo(58, 4);
-        ctx.lineTo(6, 4);
-        ctx.closePath();
-        ctx.fill();
+        ctx.save();
+        ctx.translate(32, 40);
+        ctx.scale(1.0, 0.72); // squash into an ellipse
+        ctx.translate(-32, -40);
+        ctx.fillRect(0, 0, 64, 80);
+        ctx.restore();
         tex = new THREE.CanvasTexture(c);
         this.fxTex.set(kind, tex);
         return tex;
       }
       case 'taillight': {
-        const tg = ctx.createRadialGradient(32, 32, 1, 32, 32, 30);
-        tg.addColorStop(0, 'rgba(255,60,40,0.9)');
-        tg.addColorStop(0.5, 'rgba(220,30,20,0.45)');
-        tg.addColorStop(1, 'rgba(180,20,10,0)');
+        // deep red, small — kept dim so bloom doesn't wash it pink
+        const tg = ctx.createRadialGradient(32, 32, 1, 32, 32, 26);
+        tg.addColorStop(0, 'rgba(235,30,15,0.85)');
+        tg.addColorStop(0.5, 'rgba(180,15,8,0.4)');
+        tg.addColorStop(1, 'rgba(140,10,5,0)');
         ctx.fillStyle = tg;
         ctx.fillRect(0, 0, 64, 64);
         tex = new THREE.CanvasTexture(c);
