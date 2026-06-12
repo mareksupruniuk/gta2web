@@ -29,6 +29,8 @@ export interface RenderEntity {
   /** ground slope gradient at the entity (sim coords) for hill tilting */
   dzdx?: number;
   dzdy?: number;
+  /** GTA2 drop shadow (cars/peds): dark copy offset down-right */
+  shadow?: boolean;
 }
 
 const Z_UP = new THREE.Vector3(0, 0, 1);
@@ -57,7 +59,7 @@ export interface TracerInfo {
 }
 
 const TRACER_STYLE: Record<TracerKind, { w: number; h: number }> = {
-  bullet: { w: 0.045, h: 0.34 },
+  bullet: { w: 0.06, h: 0.42 },
   rocket: { w: 0.12, h: 0.5 },
   grenade: { w: 0.09, h: 0.09 },
   molotov: { w: 0.1, h: 0.16 },
@@ -85,9 +87,13 @@ export class CityRenderer {
   private mount: HTMLElement;
   private spriteTex = new Map<string, THREE.Texture>();
   private fxTex = new Map<string, THREE.Texture>();
-  private entityMeshes = new Map<string, { mesh: THREE.Mesh; sprite: number; remap?: number; tint?: number; deltaKey?: string }>();
+  private entityMeshes = new Map<string, { mesh: THREE.Mesh; shadow?: THREE.Mesh; sprite: number; remap?: number; tint?: number; deltaKey?: string }>();
   private effects: Effect[] = [];
   private decals: THREE.Mesh[] = [];
+  /** fading tire-mark decals */
+  private marks: { mesh: THREE.Mesh; ttl: number; life: number }[] = [];
+  private markGeo: THREE.PlaneGeometry | null = null;
+  private markMat: THREE.MeshBasicMaterial | null = null;
   private tracerMeshes = new Map<number, { mesh: THREE.Mesh; kind: TracerKind }>();
   private tracerTex = new Map<TracerKind, THREE.Texture>();
   private eye = EYE_FOOT;
@@ -190,6 +196,7 @@ export class CityRenderer {
       if (rec && (rec.sprite !== e.sprite || rec.remap !== e.remapPhys || rec.tint !== e.tint || rec.deltaKey !== deltaKey)) {
         this.scene.remove(rec.mesh);
         disposeMesh(rec.mesh);
+        if (rec.shadow) this.scene.remove(rec.shadow);
         rec = undefined;
         this.entityMeshes.delete(e.key);
       }
@@ -200,8 +207,20 @@ export class CityRenderer {
         const mat = new THREE.MeshBasicMaterial({ map: tex, alphaTest: 0.4, side: THREE.DoubleSide });
         if (e.tint !== undefined) mat.color.set(e.tint);
         const mesh = new THREE.Mesh(geo, mat);
+        mesh.renderOrder = 2;
         this.scene.add(mesh);
         rec = { mesh, sprite: e.sprite, remap: e.remapPhys, tint: e.tint, deltaKey };
+        if (e.shadow) {
+          // GTA2 drop shadow: same silhouette, black, offset down-right.
+          const smat = new THREE.MeshBasicMaterial({
+            map: tex, alphaTest: 0.4, side: THREE.DoubleSide,
+            color: 0x000000, transparent: true, opacity: 0.42, depthWrite: false,
+          });
+          const smesh = new THREE.Mesh(geo, smat);
+          smesh.renderOrder = 1;
+          this.scene.add(smesh);
+          rec.shadow = smesh;
+        }
         this.entityMeshes.set(e.key, rec);
       }
       rec.mesh.position.set(e.x, -e.y, e.z);
@@ -219,13 +238,40 @@ export class CityRenderer {
       }
       const s = e.scale ?? 1;
       rec.mesh.scale.set(s, s, 1);
+      if (rec.shadow) {
+        rec.shadow.position.set(e.x + 0.07, -e.y - 0.07, Math.max(0.01, e.z - 0.018));
+        rec.shadow.quaternion.copy(rec.mesh.quaternion);
+        rec.shadow.scale.set(s, s, 1);
+      }
     }
     for (const [key, rec] of this.entityMeshes) {
       if (!seen.has(key)) {
         this.scene.remove(rec.mesh);
         disposeMesh(rec.mesh);
+        if (rec.shadow) this.scene.remove(rec.shadow);
         this.entityMeshes.delete(key);
       }
+    }
+  }
+
+  /** Persistent fading tire-mark decal at a wheel position. */
+  addSkidMark(x: number, y: number, z: number, angle: number): void {
+    if (!this.markGeo) this.markGeo = new THREE.PlaneGeometry(0.055, 0.16);
+    if (!this.markMat) {
+      this.markMat = new THREE.MeshBasicMaterial({
+        color: 0x101010, transparent: true, opacity: 0.5, depthWrite: false,
+      });
+    }
+    // Material is cloned so each mark fades independently.
+    const mesh = new THREE.Mesh(this.markGeo, this.markMat.clone());
+    mesh.position.set(x, -y, z + 0.012);
+    mesh.rotation.z = -angle + Math.PI / 2;
+    this.scene.add(mesh);
+    this.marks.push({ mesh, ttl: 14, life: 14 });
+    if (this.marks.length > 600) {
+      const old = this.marks.shift()!;
+      this.scene.remove(old.mesh);
+      (old.mesh.material as THREE.Material).dispose();
     }
   }
 
@@ -290,6 +336,19 @@ export class CityRenderer {
         grad.addColorStop(0.4, 'rgba(120,180,255,0.95)');
         grad.addColorStop(1, 'rgba(60,90,255,0)');
         break;
+      case 'debris': {
+        // burning fragment with a trailing tail (drawn along canvas y)
+        const lin = ctx.createLinearGradient(0, 0, 0, 64);
+        lin.addColorStop(0, 'rgba(255,120,10,0)');
+        lin.addColorStop(0.55, 'rgba(255,150,30,0.75)');
+        lin.addColorStop(0.85, 'rgba(255,220,120,1)');
+        lin.addColorStop(1, 'rgba(255,255,220,1)');
+        ctx.fillStyle = lin;
+        ctx.fillRect(26, 0, 12, 64);
+        tex = new THREE.CanvasTexture(c);
+        this.fxTex.set(kind, tex);
+        return tex;
+      }
       case 'blood':
         grad.addColorStop(0, 'rgba(150,15,15,0.95)');
         grad.addColorStop(0.7, 'rgba(120,10,10,0.7)');
@@ -330,6 +389,20 @@ export class CityRenderer {
           size: 0.7, vx: (Math.random() - 0.5), vy: (Math.random() - 0.5), grow: 2.2,
         });
       }
+      // Burning debris streaks fly far out of the blast (reference video:
+      // orange comets crossing half the screen, frames closeup/exp12-20).
+      for (let i = 0; i < 12; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const sp = 2.5 + Math.random() * 4.5;
+        const vx = Math.cos(a) * sp;
+        const vy = Math.sin(a) * sp;
+        this.addEffect(
+          { x: fx.x, y: fx.y, z: fx.z + 0.1 + Math.random() * 0.3 },
+          'debris',
+          0.45 + Math.random() * 0.45,
+          { size: 0.16 + Math.random() * 0.1, vx, vy, rot: -a + Math.PI / 2 },
+        );
+      }
       return;
     }
     if (fx.kind === 'bloodspray') {
@@ -357,8 +430,8 @@ export class CityRenderer {
       });
       return;
     }
-    const size = fx.kind === 'muzzle' ? 0.28 : fx.kind === 'spark' ? 0.14 : fx.kind === 'dust' ? 0.22 : 0.45;
-    const ttl = fx.kind === 'muzzle' ? 0.06 : fx.kind === 'spark' ? 0.12 : fx.kind === 'dust' ? 0.3 : 0.5;
+    const size = fx.kind === 'muzzle' ? 0.38 : fx.kind === 'spark' ? 0.16 : fx.kind === 'dust' ? 0.22 : 0.45;
+    const ttl = fx.kind === 'muzzle' ? 0.07 : fx.kind === 'spark' ? 0.12 : fx.kind === 'dust' ? 0.3 : 0.5;
     this.addEffect(fx, fx.kind, ttl, { size, grow: fx.kind === 'smoke' ? 1.5 : fx.kind === 'dust' ? 1.8 : 0.4 });
   }
 
@@ -488,8 +561,9 @@ export class CityRenderer {
     return mesh;
   }
 
-  private addEffect(at: { x: number; y: number; z: number }, kind: string, ttl: number, opts: { size: number; vx?: number; vy?: number; grow?: number }): void {
+  private addEffect(at: { x: number; y: number; z: number }, kind: string, ttl: number, opts: { size: number; vx?: number; vy?: number; grow?: number; rot?: number }): void {
     const mesh = this.flatQuad(at, opts.size, kind, 0.05 + Math.random() * 0.02);
+    if (opts.rot !== undefined) mesh.rotation.z = opts.rot;
     this.scene.add(mesh);
     this.effects.push({
       mesh, ttl, life: ttl,
@@ -498,10 +572,55 @@ export class CityRenderer {
     });
   }
 
+  /**
+   * Big green LCD score popup in world space (reference video: "900" behind
+   * the action, fading out). Optionally a yellow label line above it.
+   */
+  spawnScore(x: number, y: number, z: number, amount: number, label?: string): void {
+    const c = document.createElement('canvas');
+    c.width = 256;
+    c.height = 128;
+    const ctx = c.getContext('2d')!;
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 72px "Courier New", monospace';
+    ctx.fillStyle = 'rgba(20,60,20,0.85)';
+    ctx.fillText(String(amount), 131, 95);
+    ctx.fillStyle = 'rgba(90,220,90,0.95)';
+    ctx.fillText(String(amount), 128, 92);
+    if (label) {
+      ctx.font = 'bold 26px Arial';
+      ctx.fillStyle = '#ffd700';
+      ctx.strokeStyle = '#7a1010';
+      ctx.lineWidth = 4;
+      ctx.strokeText(label, 128, 26);
+      ctx.fillText(label, 128, 26);
+    }
+    const tex = new THREE.CanvasTexture(c);
+    const geo = new THREE.PlaneGeometry(2.2, 1.1);
+    const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(x, -y, z + 0.4);
+    mesh.renderOrder = 5;
+    this.scene.add(mesh);
+    this.effects.push({ mesh, ttl: 1.6, life: 1.6, vx: 0, vy: 0, grow: 0.35, fade: true });
+  }
+
   // ---------------------------------------------------------------- frame
 
   /** Per-frame: advance effects and position the chase camera. */
   update(dt: number, focus: { x: number; y: number; z: number; speed: number; driving: boolean; vx?: number; vy?: number }): void {
+    // Tire marks persist, then fade away over their last 4 seconds.
+    this.marks = this.marks.filter((m) => {
+      m.ttl -= dt;
+      if (m.ttl <= 0) {
+        this.scene.remove(m.mesh);
+        (m.mesh.material as THREE.Material).dispose();
+        return false;
+      }
+      if (m.ttl < 4) (m.mesh.material as THREE.MeshBasicMaterial).opacity = 0.5 * (m.ttl / 4);
+      return true;
+    });
+
     this.effects = this.effects.filter((e) => {
       e.ttl -= dt;
       if (e.ttl <= 0) {

@@ -81,6 +81,16 @@ const PICKUP_SPRITES: Record<Pickup['kind'], number> = {
 };
 const PICKUP_FRAMES = 8;
 
+const hudRightEl = $('hud-right');
+const zoneEl = $('zone');
+let zoneTimer = 0;
+
+function showZone(name: string): void {
+  zoneEl.textContent = name;
+  zoneEl.style.opacity = '1';
+  zoneTimer = 3;
+}
+
 function showMsg(text: string, seconds = 2.5): void {
   msgEl.textContent = text;
   msgEl.style.opacity = '1';
@@ -88,7 +98,8 @@ function showMsg(text: string, seconds = 2.5): void {
 }
 
 function updateHud(w: World2): void {
-  $('hud-health').textContent = String(Math.max(0, Math.ceil(w.player.health)));
+  // GTA2 health: a row of red hearts, one per 20 HP.
+  $('hud-health').textContent = '\u2665'.repeat(Math.max(0, Math.ceil(w.player.health / 20)));
   $('hud-weapon').textContent = w.player.car ? 'DRIVING' : w.player.inventory.currentDef().name;
   const ammo = w.player.inventory.currentAmmo();
   $('hud-ammo').textContent = !w.player.car && Number.isFinite(ammo) ? `× ${ammo}` : '';
@@ -103,6 +114,7 @@ function openMenu(): void {
   paused = true;
   menuEl.classList.remove('hidden');
   hudEl.classList.remove('visible');
+  hudRightEl.classList.remove('visible');
   btnStart.textContent = world ? 'RESUME' : 'PLAY';
 }
 
@@ -116,6 +128,7 @@ function closeMenuAndPlay(): void {
   }
   menuEl.classList.add('hidden');
   hudEl.classList.add('visible');
+  hudRightEl.classList.add('visible');
   paused = false;
 }
 
@@ -158,6 +171,7 @@ async function startGame(): Promise<void> {
 
     menuEl.classList.add('hidden');
     hudEl.classList.add('visible');
+    hudRightEl.classList.add('visible');
     paused = false;
     lastT = performance.now();
     rafId = requestAnimationFrame(tick);
@@ -214,6 +228,7 @@ function entities(w: World2): RenderEntity[] {
       deltas: dents > 0 ? Array.from({ length: dents }, (_, i) => i) : undefined,
       x: car.pos.x, y: car.pos.y, z: car.z + 0.05,
       angle: car.heading,
+      shadow: !car.exploded,
       ...gradAt(w, car.pos.x, car.pos.y, car.z),
     });
   }
@@ -236,6 +251,7 @@ function entities(w: World2): RenderEntity[] {
       remapPhys: ped.remap >= 0 ? s.pedRemapPalette(ped.remap) : undefined,
       x: ped.pos.x, y: ped.pos.y, z: ped.z + (ped.dead ? 0.02 : 0.03),
       angle: ped.heading,
+      shadow: !ped.dead,
       ...(ped.dead ? {} : gradAt(w, ped.pos.x, ped.pos.y, ped.z)),
     });
   }
@@ -261,6 +277,7 @@ function entities(w: World2): RenderEntity[] {
       sprite: PED_SPRITE_BASE + PED_SET_PLAYER + frame,
       x: p.pos.x, y: p.pos.y, z: p.z + 0.035,
       angle: p.heading,
+      shadow: true,
       ...gradAt(w, p.pos.x, p.pos.y, p.z),
     });
   }
@@ -355,6 +372,37 @@ function tick(now: number): void {
 
     const events = world.drainEvents();
     for (const fx of fxFromEvents(events, world)) renderer.spawnFx(fx);
+    for (const e of events) {
+      if (e.type === 'score') {
+        const z = world.map.groundZ(e.pos.x, e.pos.y, world.player.z + 2) ?? world.player.z;
+        renderer.spawnScore(e.pos.x, e.pos.y, z, e.amount);
+        if (e.label) showMsg(e.label, 2);
+      }
+    }
+    // Tire marks: two streaks at the rear wheels while sliding.
+    for (const c of world.cars) {
+      if (!c.skidding || c.exploded) continue;
+      const cos = Math.cos(c.heading);
+      const sin = Math.sin(c.heading);
+      const bx = c.pos.x - cos * c.length * 0.32;
+      const by = c.pos.y - sin * c.length * 0.32;
+      const wx = -sin * c.width * 0.38;
+      const wy = cos * c.width * 0.38;
+      renderer.addSkidMark(bx + wx, by + wy, c.z, c.heading);
+      renderer.addSkidMark(bx - wx, by - wy, c.z, c.heading);
+    }
+    // Battered (not yet burning) cars trail grey engine smoke.
+    for (const c of world.cars) {
+      if (c.exploded || c.onFire || c.health >= 45 || Math.random() > 0.16) continue;
+      const cos = Math.cos(c.heading);
+      const sin = Math.sin(c.heading);
+      renderer.spawnFx({
+        kind: 'smoke',
+        x: c.pos.x + cos * c.length * 0.3,
+        y: c.pos.y + sin * c.length * 0.3,
+        z: c.z + 0.18,
+      });
+    }
     audio.handleEvents(
       events.map((e) => {
         const scaled = { ...e, pos: { x: e.pos.x * PX, y: e.pos.y * PX } };
@@ -471,7 +519,7 @@ function tick(now: number): void {
     const area = world.map.areaName(world.player.pos.x, world.player.pos.y);
     if (area && area !== lastArea) {
       lastArea = area;
-      if (!/\d/.test(area) && area.length > 3) showMsg(area.toUpperCase(), 2.5);
+      if (!/\d/.test(area) && area.length > 3) showZone(area.toUpperCase());
     }
   } else {
     audio.setEngine(false, 0);
@@ -485,6 +533,10 @@ function tick(now: number): void {
   if (msgTimer > 0) {
     msgTimer -= dt;
     if (msgTimer <= 0) msgEl.style.opacity = '0';
+  }
+  if (zoneTimer > 0) {
+    zoneTimer -= dt;
+    if (zoneTimer <= 0) zoneEl.style.opacity = '0';
   }
 
   renderer.syncEntities(entities(world));

@@ -98,4 +98,6 @@ export type GameEvent =
   | { type: 'car_crash'; pos: Vec2; speed: number }
   | { type: 'explosion'; pos: Vec2 }
   | { type: 'pickup'; pos: Vec2 }
-  | { type: 'player_died'; pos: Vec2 };
+  | { type: 'player_died'; pos: Vec2 }
+  /** player earned points — drives the big green world-space popups */
+  | { type: 'score'; pos: Vec2; amount: number; label?: string };

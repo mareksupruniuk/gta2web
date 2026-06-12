@@ -62,6 +62,7 @@
       #controls-panel.visible { display: block; }
       #menu .footer { position: absolute; bottom: 16px; color: #444; font-size: 12px; font-family: monospace; }
 
+      /* GTA2-style HUD: money LCD top-left, hearts + weapon + cops top-right */
       #hud {
         position: absolute; top: 12px; left: 12px;
         color: #fff; font-family: 'Arial Black', Arial, sans-serif;
@@ -70,32 +71,58 @@
         display: none;
       }
       #hud.visible { display: block; }
-      #hud .health { color: #ff4444; }
-      #hud .weapon { color: #ffd700; }
-      #hud .score { color: #44ff44; }
-      #wanted {
-        position: absolute; top: 12px; right: 16px;
-        font-size: 22px; letter-spacing: 2px;
-        color: #4488ff; text-shadow: 2px 2px 0 #000;
-        z-index: 5; pointer-events: none; display: none;
+      #hud .score {
+        color: #6f6; font-family: 'Courier New', monospace; font-weight: bold;
+        font-size: 24px; background: rgba(0,24,0,0.72);
+        border: 2px solid #2a4; border-radius: 4px; padding: 1px 10px;
+        text-shadow: 0 0 6px #4f4;
       }
-      #wanted.visible { display: block; }
-      #msg {
-        position: absolute; bottom: 48px; left: 0; right: 0; text-align: center;
-        color: #ffd700; font-family: 'Arial Black', Arial, sans-serif; font-size: 22px;
+      #hud-right {
+        position: absolute; top: 12px; right: 16px; text-align: right;
+        font-family: 'Arial Black', Arial, sans-serif; font-size: 18px;
         text-shadow: 2px 2px 0 #000; z-index: 5; pointer-events: none;
+        display: none;
+      }
+      #hud-right.visible { display: block; }
+      #hud-right .health { color: #f33; font-size: 20px; letter-spacing: 1px; }
+      #hud-right .weapon { color: #ffd700; margin-top: 2px; }
+      #wanted {
+        font-size: 20px; letter-spacing: 2px; margin-top: 2px;
+        color: #4488ff;
+      }
+      #msg {
+        position: absolute; top: 22%; left: 0; right: 0; text-align: center;
+        color: #ffd700; font-family: 'Arial Black', Arial, sans-serif;
+        font-size: 42px; font-style: italic; letter-spacing: 2px;
+        text-shadow: 3px 3px 0 #8c0e0e, -2px -2px 0 #8c0e0e, 2px -2px 0 #8c0e0e,
+          -2px 2px 0 #8c0e0e, 5px 5px 10px rgba(0,0,0,0.7);
+        z-index: 5; pointer-events: none;
         opacity: 0; transition: opacity 0.3s;
+      }
+      /* Yellow district plaque, like the original zone-name bar */
+      #zone {
+        position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+        background: linear-gradient(#e8d75a, #c9b53a);
+        color: #1c1808; font-family: 'Arial Black', Arial, sans-serif;
+        font-size: 15px; letter-spacing: 3px; padding: 3px 26px;
+        border: 1px solid #8a7a20; border-radius: 2px;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.6);
+        z-index: 5; pointer-events: none;
+        opacity: 0; transition: opacity 0.4s;
       }
     </style>
   </head>
   <body>
     <div id="game"></div>
     <div id="hud">
-      <div class="health">♥ <span id="hud-health">100</span></div>
-      <div class="weapon"><span id="hud-weapon">FISTS</span> <span id="hud-ammo"></span></div>
-      <div class="score">$ <span id="hud-score">0</span></div>
+      <span class="score">$<span id="hud-score">0</span></span>
     </div>
-    <div id="wanted"></div>
+    <div id="hud-right">
+      <div class="health" id="hud-health"></div>
+      <div class="weapon"><span id="hud-weapon">FISTS</span> <span id="hud-ammo"></span></div>
+      <div id="wanted"></div>
+    </div>
+    <div id="zone"></div>
     <div id="msg"></div>
     <div id="menu">
       <h1>GTA2WEB</h1>

@@ -180,6 +180,18 @@ export class World2 {
     return out;
   }
 
+  /** Score points with the big green world-space popup. */
+  private award(amount: number, pos: Vec2, label?: string): void {
+    this.player.score += amount;
+    this.emit({ type: 'score', pos: { ...pos }, amount, label });
+  }
+
+  /** Points + heat for a ped the player killed. */
+  private awardKill(ped: Ped2): void {
+    this.award(ped.isCop ? 150 : 50, ped.pos);
+    this.wanted.add(ped.isCop ? HEAT_PER.copKilled : HEAT_PER.pedKilled);
+  }
+
   // ------------------------------------------------------------- spawning
 
   private placePickups(): void {
@@ -255,6 +267,8 @@ export class World2 {
       if (t !== undefined && this.time - t < 6) {
         this.wanted.add(HEAT_PER.carDestroyed, true);
         this.heatCounted.add(car.id);
+        const isCopCar = this.copCarIds.has(car.id);
+        this.award(isCopCar ? 900 : 200, car.pos, isCopCar ? 'COP CAR CRUSH!' : undefined);
       }
     }
     const player = this.player;
@@ -417,7 +431,7 @@ export class World2 {
           if (Math.abs(angleDiff(player.heading, a)) < 1.1) {
             ped.applyDamage(def.pedDamage, this.emit, player.pos);
             this.emit({ type: 'hit', pos: { ...ped.pos }, surface: 'ped' });
-            if (ped.dead) { player.score += 10; this.wanted.add(ped.isCop ? HEAT_PER.copKilled : HEAT_PER.pedKilled); }
+            if (ped.dead) this.awardKill(ped);
             return;
           }
         }
@@ -484,7 +498,7 @@ export class World2 {
       const ped = this.peds.find((pd) => !pd.dead && Math.abs(pd.z - p.z) < 1 && dist(pd.pos, { x, y }) < PED_RADIUS + 0.12);
       if (ped) {
         ped.applyDamage(pedDamage, this.emit, p.pos);
-        if (ped.dead) { p.score += 10; this.wanted.add(ped.isCop ? HEAT_PER.copKilled : HEAT_PER.pedKilled); }
+        if (ped.dead) this.awardKill(ped);
         this.emit({ type: 'hit', pos: { x, y }, surface: 'ped' });
         break;
       }
@@ -585,7 +599,7 @@ export class World2 {
         if (ped.dead || Math.abs(ped.z - car.z) > 0.8) continue;
         if (car.containsPoint(ped.pos.x, ped.pos.y, PED_RADIUS)) {
           ped.applyDamage(100, this.emit);
-          if (car.driver === 'player') { this.player.score += 10; this.wanted.add(ped.isCop ? HEAT_PER.copKilled : HEAT_PER.pedKilled); }
+          if (car.driver === 'player') this.awardKill(ped);
         }
       }
       const p = this.player;
@@ -629,10 +643,7 @@ export class World2 {
           if (dist(ped.pos, b.pos) < PED_RADIUS + 0.07) {
             if (!b.isRocket) {
               ped.applyDamage(b.pedDamage, this.emit, { x: ox, y: oy });
-              if (ped.dead && !b.hostile) {
-                this.player.score += 10;
-                this.wanted.add(ped.isCop ? HEAT_PER.copKilled : HEAT_PER.pedKilled);
-              }
+              if (ped.dead && !b.hostile) this.awardKill(ped);
             }
             this.emit({ type: 'hit', pos: { ...b.pos }, surface: 'ped' });
             alive = false;
