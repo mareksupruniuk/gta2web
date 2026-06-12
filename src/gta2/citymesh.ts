@@ -103,18 +103,11 @@ export function buildChunkGeometry(
   const cutout = emptyGeom();
   const pick = (f: Face) => (f.flat || transparent.has(f.tile) ? cutout : solid);
 
-  // Tiles >= 992 are virtual animation slots (water, neon...): render the
-  // first frame of their ANIM entry. Unmapped virtual tiles are invisible.
-  const animFirst = new Map<number, number>();
-  for (const a of map.animations) {
-    if (a.tiles.length > 0) animFirst.set(a.base, a.tiles[0]);
-  }
-  const fix = (f: Face): Face => {
-    const mapped = animFirst.get(f.tile);
-    if (mapped !== undefined) return { ...f, tile: mapped };
-    if (f.tile >= 992) return { ...f, tile: 0 };
-    return f;
-  };
+  // Animated tiles keep their own atlas slot (the renderer cycles the slot's
+  // pixels through the ANIM frames, so every face using it animates at once).
+  // Virtual tiles without an ANIM entry are invisible in the original — they
+  // fall back to tile 0 here.
+  const fix = (f: Face): Face => (atlas.has(f.tile) ? f : { ...f, tile: 0 });
 
   for (let by = cy * CHUNK; by < (cy + 1) * CHUNK; by++) {
     for (let bx = cx * CHUNK; bx < (cx + 1) * CHUNK; bx++) {

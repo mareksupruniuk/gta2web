@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { GmpMap, MAP_SIZE } from '../gta2/gmp';
+import { GmpMap, MAP_SIZE, TileAnimation } from '../gta2/gmp';
 import { Sty } from '../gta2/sty';
 import { buildTileAtlas } from '../gta2/atlas';
 import { buildChunkGeometry, CHUNK, computeTransparentTiles, GeomArrays } from '../gta2/citymesh';
@@ -98,6 +98,16 @@ export class CityRenderer {
   private tracerTex = new Map<TracerKind, THREE.Texture>();
   private eye = EYE_FOOT;
   private shake = 0;
+  /** city atlas texture + tile animations (ANIM chunk slot cycling) */
+  private cityTex: THREE.DataTexture | null = null;
+  private animStates: {
+    anim: TileAnimation;
+    slotX: number;
+    slotY: number;
+    frame: number;
+    t: number;
+    frames: (THREE.DataTexture | null)[];
+  }[] = [];
   private leadX = 0;
   private leadY = 0;
 
@@ -137,12 +147,27 @@ export class CityRenderer {
   // ----------------------------------------------------------------- city
 
   private buildCity(gmp: GmpMap, sty: Sty): void {
-    const atlas = buildTileAtlas(sty);
+    const atlas = buildTileAtlas(sty, gmp.animations);
     const tex = new THREE.DataTexture(atlas.data, atlas.size, atlas.size, THREE.RGBAFormat);
     tex.magFilter = THREE.NearestFilter;
     tex.minFilter = THREE.NearestFilter;
     tex.colorSpace = THREE.SRGBColorSpace;
     tex.needsUpdate = true;
+    this.cityTex = tex;
+
+    // Tile animations: cycle each base's atlas slot through its frames.
+    for (const anim of gmp.animations) {
+      if (anim.tiles.length < 2 || !atlas.has(anim.base)) continue;
+      const [slotX, slotY] = atlas.slotXY(anim.base);
+      const frames = anim.tiles.map((t) => {
+        if (t >= sty.tileCount) return null;
+        const f = new THREE.DataTexture(sty.tileRGBA(t), 64, 64, THREE.RGBAFormat);
+        f.colorSpace = THREE.SRGBColorSpace;
+        f.needsUpdate = true;
+        return f;
+      });
+      this.animStates.push({ anim, slotX, slotY, frame: 0, t: 0, frames });
+    }
 
     const solidMat = new THREE.MeshBasicMaterial({ map: tex, vertexColors: true, side: THREE.DoubleSide });
     const cutoutMat = new THREE.MeshBasicMaterial({
@@ -607,8 +632,27 @@ export class CityRenderer {
 
   // ---------------------------------------------------------------- frame
 
+  /** Advance ANIM tile cycling: blit the next frame into the base's slot. */
+  private updateTileAnims(dt: number): void {
+    if (!this.cityTex) return;
+    const pos = new THREE.Vector2();
+    for (const st of this.animStates) {
+      // frameRate is in game ticks (30/s) per animation frame
+      const frameDur = Math.max(1, st.anim.frameRate) / 30;
+      st.t += dt;
+      if (st.t < frameDur) continue;
+      st.t %= frameDur;
+      st.frame = (st.frame + 1) % st.frames.length;
+      const tex = st.frames[st.frame];
+      if (!tex) continue;
+      pos.set(st.slotX, st.slotY);
+      this.three.copyTextureToTexture(tex, this.cityTex, null, pos);
+    }
+  }
+
   /** Per-frame: advance effects and position the chase camera. */
   update(dt: number, focus: { x: number; y: number; z: number; speed: number; driving: boolean; vx?: number; vy?: number }): void {
+    this.updateTileAnims(dt);
     // Tire marks persist, then fade away over their last 4 seconds.
     this.marks = this.marks.filter((m) => {
       m.ttl -= dt;

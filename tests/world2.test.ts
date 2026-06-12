@@ -117,7 +117,7 @@ describe.skipIf(!haveData)('World2 on Downtown', () => {
       world.update(1 / 60, { ...NEUTRAL, attack: i % 25 === 0 });
     }
     expect(ped.dead).toBe(true);
-    expect(p.score).toBe(score0 + 10);
+    expect(p.score).toBe(score0 + 50); // GTA2 scoring: 50 per ped kill
   });
 
   it('cars are solid: a body inside a car gets pushed out', () => {
