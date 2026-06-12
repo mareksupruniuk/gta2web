@@ -6,6 +6,7 @@ import { parseSty } from '../src/gta2/sty';
 import { CityMap } from '../src/game2/citymap';
 import { PlayerInput, pushOutOfCar, World2 } from '../src/game2/world2';
 import { Cop } from '../src/game2/police';
+import { GangMember } from '../src/game2/gangs';
 
 const DATA = join(__dirname, '..', 'gamedata');
 const haveData = existsSync(join(DATA, 'wil.gmp')) && existsSync(join(DATA, 'wil.sty'));
@@ -347,6 +348,55 @@ describe.skipIf(!haveData)('World2 on Downtown', () => {
     expect(pk.respawnIn).toBeGreaterThan(0);
     if (pk.kind !== 'health') {
       expect(world.player.inventory.has(pk.kind)).toBe(true);
+    }
+  });
+});
+
+describe.skipIf(!haveData)('gangs on Downtown', () => {
+  const map = haveData ? new CityMap(parseGmp(load('wil.gmp'))) : (null as unknown as CityMap);
+  const sty = haveData ? parseSty(load('wil.sty')) : (null as unknown as ReturnType<typeof parseSty>);
+
+  it('parses gang turfs and spawns members in colours; killing one provokes the gang', () => {
+    const world = new World2(map, sty, 777);
+    expect(world.turfs.length).toBeGreaterThanOrEqual(8); // 3 gangs x several zones
+    const gangs = new Set(world.turfs.map((t) => t.gang.id));
+    expect(gangs).toContain('yakuza');
+    expect(gangs).toContain('loonies');
+    expect(gangs).toContain('zaibatsu');
+
+    // drop the player inside a turf and force-spawn peds around them
+    const turf = world.turfs.find((t) => t.gang.id === 'yakuza')!;
+    world.player.pos = { x: turf.x + turf.w / 2, y: turf.y + turf.h / 2 };
+    world.player.z = map.groundZ(world.player.pos.x, world.player.pos.y, 7.9) ?? world.player.z;
+    for (let i = 0; i < 60; i++) (world as unknown as { spawnPed(b: boolean): void }).spawnPed(true);
+    const members = world.peds.filter((p): p is GangMember => p instanceof GangMember);
+    expect(members.length).toBeGreaterThan(0);
+
+    // killing a member makes that gang hostile
+    const victim = members[0];
+    victim.pos = { x: world.player.pos.x + 0.5, y: world.player.pos.y };
+    victim.z = world.player.z;
+    world.player.inventory.add('pistol', 10);
+    world.player.heading = 0;
+    for (let i = 0; i < 120 && !victim.dead; i++) {
+      world.update(1 / 60, { ...NEUTRAL, attack: i % 30 === 0 });
+    }
+    expect(victim.dead).toBe(true);
+    expect(world.gangHostile.has(victim.gang.id)).toBe(true);
+
+    // a hostile member nearby opens fire (hostile bullets appear)
+    const shooter = world.peds.find(
+      (p): p is GangMember => p instanceof GangMember && !p.dead && p.gang.id === victim.gang.id,
+    );
+    if (shooter) {
+      shooter.pos = { x: world.player.pos.x + 2, y: world.player.pos.y };
+      shooter.z = world.player.z;
+      let hostileShot = false;
+      for (let i = 0; i < 180 && !hostileShot; i++) {
+        world.update(1 / 60, NEUTRAL);
+        hostileShot = world.bullets.some((b) => b.hostile);
+      }
+      expect(hostileShot).toBe(true);
     }
   });
 });

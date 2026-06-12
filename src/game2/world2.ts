@@ -4,6 +4,7 @@ import { angleDiff, GameEvent, Vec2, dist } from '../sim/types';
 import { Car2 } from './car2';
 import { CityMap } from './citymap';
 import { panicNearby, Ped2, PED_RADIUS } from './ped2';
+import { GangId, GangMember, gangTurfs, GangTurf, turfAt } from './gangs';
 import { Cop, COP_CAR_MODEL, policeCarModel, PursuitAI } from './police';
 import { TrafficAI, dirAngle, dirNameFromArrows } from './traffic2';
 import { Bullet, Flame, Inventory, Thrown, WEAPONS } from './weapons2';
@@ -140,6 +141,10 @@ export class World2 {
   private exitGrace = 0;
   /** seconds until the next roadblock may be thrown up (wanted >= 3) */
   private roadblockTimer = 8;
+  /** gang turf rects (ZONE type 14) */
+  turfs: GangTurf[] = [];
+  /** gangs the player has provoked (kill a member -> hostile) */
+  gangHostile = new Set<GangId>();
 
   constructor(map: CityMap, sty: Sty, seed = 1999, spawn?: { x: number; y: number }) {
     this.map = map;
@@ -165,6 +170,7 @@ export class World2 {
     const spawns = map.scanSpawns();
     this.roadSpawns = spawns.roads;
     this.pavementSpawns = spawns.pavements;
+    this.turfs = gangTurfs(map.gmp.zones);
 
     this.placePickups();
     for (let i = 0; i < PED_TARGET; i++) this.spawnPed(true);
@@ -192,6 +198,8 @@ export class World2 {
   private awardKill(ped: Ped2): void {
     this.award(ped.isCop ? 150 : 50, ped.pos);
     this.wanted.add(ped.isCop ? HEAT_PER.copKilled : HEAT_PER.pedKilled);
+    // killing a gang member turns the whole gang hostile
+    if (ped instanceof GangMember) this.gangHostile.add(ped.gang.id);
   }
 
   // ------------------------------------------------------------- spawning
@@ -218,6 +226,12 @@ export class World2 {
     });
     if (candidates.length === 0) return;
     const s = this.rng.pick(candidates);
+    // inside gang turf, most peds on the street are members in colours
+    const turf = turfAt(this.turfs, s);
+    if (turf && this.rng.chance(0.55)) {
+      this.peds.push(new GangMember({ x: s.x, y: s.y }, s.z, turf.gang));
+      return;
+    }
     const remapCount = this.sty.palBase.pedRemap;
     const remap = remapCount > 0 ? this.rng.int(0, remapCount) : -1;
     this.peds.push(new Ped2({ x: s.x, y: s.y }, s.z, remap));
@@ -309,6 +323,8 @@ export class World2 {
       if (ped instanceof Cop) {
         const verdict = ped.updateCop(dt, this.map, this.rng, this.emit, player, this.wanted.level, this.bullets);
         if (verdict === 'arrest') this.bust();
+      } else if (ped instanceof GangMember) {
+        ped.updateMember(dt, this.map, this.rng, this.emit, player, this.gangHostile.has(ped.gang.id), this.bullets);
       } else {
         ped.update(dt, this.map, this.rng, this.emit);
       }

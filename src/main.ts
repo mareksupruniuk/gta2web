@@ -3,6 +3,7 @@ import { Gta2Bank } from './audio/gta2bank';
 import { Input } from './core/input';
 import { setModelPhysics } from './game2/car2';
 import { CityMap } from './game2/citymap';
+import { GangMember } from './game2/gangs';
 import { Cop } from './game2/police';
 import { Pickup, PlayerInput, World2 } from './game2/world2';
 import { parseGci } from './gta2/gci';
@@ -247,10 +248,13 @@ function entities(w: World2): RenderEntity[] {
     let frame: number;
     if (ped.dead) {
       frame = ped.burned ? ANIM.burnedCorpse : ANIM.corpses[ped.id % ANIM.corpses.length];
-    } else if (ped instanceof Cop && ped.shooting) {
+    } else if ((ped instanceof Cop || ped instanceof GangMember) && ped.shooting) {
       frame = ANIM.firing;
     } else if (ped.state === 'flee' || isCop) {
       frame = ANIM.run.base + (Math.floor(ped.animTime * 12) % ANIM.run.frames);
+    } else if (ped instanceof GangMember) {
+      // members patrol with their piece out
+      frame = ANIM.armedWalk.base + (Math.floor(ped.animTime * 10) % ANIM.armedWalk.frames);
     } else {
       frame = ANIM.walk.base + (Math.floor(ped.animTime * 10) % ANIM.walk.frames);
     }
