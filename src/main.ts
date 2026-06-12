@@ -767,7 +767,7 @@ for (const btn of document.querySelectorAll<HTMLButtonElement>('#districts butto
 const TIMES = ['day', 'dusk', 'dawn'] as const;
 const daylightEl = $('daylight');
 const btnTime = $<HTMLButtonElement>('btn-time');
-let timeMode = (localStorage.getItem('gta2.time') ?? 'day') as (typeof TIMES)[number];
+let timeMode = (localStorage.getItem('gta2.time') ?? 'dusk') as (typeof TIMES)[number];
 function applyTimeMode(): void {
   daylightEl.className = timeMode === 'day' ? '' : timeMode;
   btnTime.textContent = `TIME: ${timeMode.toUpperCase()}`;
