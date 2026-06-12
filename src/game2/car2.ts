@@ -17,7 +17,9 @@ export interface Handling {
   maxSpeed: number;
   reverseSpeed: number;
   brakeDecel: number;
-  turnRate: number;
+  /** raw gci steering values (wheel-angle model, docs §7 + CarPhysics_B0) */
+  turnIn: number;
+  turnRatio: number;
   grip: number;
   /** lateral speed (blocks/s) where the tires break loose */
   skidThreshold: number;
@@ -47,7 +49,8 @@ function fromPhysics(p: ModelPhysics): Handling {
     maxSpeed: p.maxSpeed * TPS,
     reverseSpeed: Math.max(1.5, p.maxSpeed * TPS * 0.35),
     brakeDecel: p.brakeFriction * 4.5,
-    turnRate: p.turnIn * 6 + p.turnRatio * 1.5,
+    turnIn: p.turnIn,
+    turnRatio: p.turnRatio,
     grip: 6.5 * Math.sqrt(Math.max(0.2, p.rearEndStability)),
     skidThreshold: p.skidThreshold * TPS,
     handbrakeSlide: p.handbrakeSlide,
@@ -68,7 +71,8 @@ function fromRating(info: CarInfo): Handling {
     maxSpeed: [7.0, 9.0, 11.5][tier] - sizePenalty,
     reverseSpeed: 2.6,
     brakeDecel: 8,
-    turnRate: [2.4, 2.9, 3.4][tier] - sizePenalty * 0.5,
+    turnIn: [0.25, 0.3, 0.38][tier],
+    turnRatio: [0.22, 0.3, 0.38][tier],
     grip: 8,
     skidThreshold: 2.6,
     handbrakeSlide: 0.45,
@@ -108,6 +112,8 @@ export class Car2 {
   skidding = false;
   /** brake-to-reverse pause: brief stop before reverse engages (GTA2 feel) */
   private reverseDelay = 0;
+  /** current steering deflection -1..1; builds at the model's turn-in rate */
+  private steerState = 0;
   /** GTA2: a badly damaged car catches fire and burns before exploding. */
   onFire = false;
   private burnTime = 0;
@@ -241,11 +247,29 @@ export class Car2 {
       emit({ type: 'skid', pos: { ...this.pos }, intensity: Math.min(1, Math.abs(lat) / 3) });
     }
 
-    // Steering: builds up with speed, loses authority at very high speed.
-    const speedFactor =
-      Math.min(1, Math.abs(fwd) / 1.5) / (1 + Math.max(0, Math.abs(fwd) - 6) * 0.05);
+    // Steering per the original (CarPhysics_B0::UpdateSteeringAngle_562560):
+    // the wheel angle is turn_ratio scaled by (0.15 - speed)/0.03 in
+    // tiles/tick, clamped at 0.0625 -> full lock when crawling, ~2.08x
+    // turn_ratio at speed. Yaw follows a bicycle model; turn_in sets how
+    // fast the wheel reaches its target deflection.
+    const response = 4 + h.turnIn * 18;
+    const dSteer = Math.max(-response * dt, Math.min(response * dt, steer - this.steerState));
+    this.steerState = Math.max(-1, Math.min(1, this.steerState + dSteer));
+    const vt = Math.min(0.15, Math.abs(fwd) / 30); // tiles/tick
+    const angleFactor = Math.max(0.0625, 0.15 - vt) / 0.03; // 2.083 .. 5
+    const wheelAngle = Math.min(1.15, h.turnRatio * angleFactor);
+    const wheelbase = Math.max(0.5, this.length * 0.75);
+    // bicycle-model yaw, limited by what the rear tires can hold (+35%
+    // overshoot allowance = the controllable drift window)
+    const tireLimit = (1.35 * h.grip * h.skidThreshold) / Math.max(1, Math.abs(fwd));
+    const yawRate = Math.min((Math.abs(fwd) / wheelbase) * Math.sin(wheelAngle), tireLimit, 3.6);
     const dir = fwd >= 0 ? 1 : -1;
-    this.heading = wrapAngle(this.heading + steer * h.turnRate * speedFactor * dir * dt);
+    const dYaw = this.steerState * yawRate * dir * dt;
+    this.heading = wrapAngle(this.heading + dYaw);
+    // The velocity does NOT rotate with the car — the world-frame momentum
+    // becomes lateral slip in the new car frame, and the tires (grip above)
+    // drag it back in line. This is what makes fast corners drift.
+    lat -= fwd * dYaw;
 
     const nc = Math.cos(this.heading);
     const ns = Math.sin(this.heading);
