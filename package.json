@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "prebuild": "node scripts/fetch-gamedata.mjs",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
@@ -16,6 +17,7 @@
   },
   "devDependencies": {
     "@types/node": "^25.9.2",
+    "7z-wasm": "^1.2.0",
     "playwright": "^1.60.0",
     "typescript": "^5.7.3",
     "vite": "^6.1.0",

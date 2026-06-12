@@ -19,13 +19,12 @@ network, pedestrians, weapons, explosions and sound.
 
 ```sh
 npm install
-./scripts/fetch-gamedata.sh   # downloads the GTA2 freeware data (needs: brew install sevenzip)
-ln -sfn ../gamedata public/gamedata
-npm run dev                   # then open the printed URL
+node scripts/fetch-gamedata.mjs   # downloads the GTA2 freeware data (pure Node, no system deps)
+npm run dev                       # then open the printed URL
 ```
 
 - `npm test` — unit tests (vitest), including parser tests against the real data
-- `npm run build` — production build
+- `npm run build` — production build (fetches gamedata automatically if missing, so CI builds work)
 - `node scripts/verify.mjs` — headless-browser smoke test (dev server on port 5179)
 
 ## Controls (GTA2 style)
