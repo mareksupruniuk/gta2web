@@ -43,7 +43,18 @@ export interface PlayerInput {
 
 import type { WeaponId } from '../sim/types';
 
-export type PickupKind = Exclude<WeaponId, 'fists'> | 'health';
+export type PowerupKind =
+  | 'armor' | 'bribe' | 'jailfree' | 'multiplier' | 'frenzy'
+  | 'invuln' | 'invis' | 'double' | 'reload' | 'respect' | 'instagang';
+export type PickupKind = Exclude<WeaponId, 'fists'> | 'health' | PowerupKind;
+export const POWERUP_KINDS: PowerupKind[] = [
+  'armor', 'bribe', 'jailfree', 'multiplier', 'frenzy',
+  'invuln', 'invis', 'double', 'reload', 'respect', 'instagang',
+];
+const POWERUP_TIME = 20; // seconds for the timed ones
+const FRENZY_TIME = 60;
+const FRENZY_GOAL = 8;
+const FRENZY_REWARD = 5000;
 
 export interface Pickup {
   pos: Vec2;
@@ -70,14 +81,41 @@ export class Player2 {
   dead = false;
   moving = false;
   animTime = 0;
+  /** GTA2 powerups */
+  armor = 0;
+  multiplier = 1;
+  /** get-outta-jail-free cards held (keep weapons when busted) */
+  jailFree = 0;
+  /** timed powerups: seconds remaining */
+  timers = new Map<'invuln' | 'invis' | 'double' | 'reload', number>();
 
   constructor(spawn: { x: number; y: number; z: number }) {
     this.pos = { x: spawn.x, y: spawn.y };
     this.z = spawn.z;
   }
 
+  powered(kind: 'invuln' | 'invis' | 'double' | 'reload'): boolean {
+    return (this.timers.get(kind) ?? 0) > 0;
+  }
+
+  tickPowerups(dt: number): void {
+    for (const [k, t] of this.timers) {
+      const left = t - dt;
+      if (left <= 0) this.timers.delete(k);
+      else this.timers.set(k, left);
+    }
+    this.inventory.intervalScale = this.powered('reload') ? 0.5 : 1;
+  }
+
   applyDamage(amount: number): void {
-    if (this.dead) return;
+    if (this.dead || this.powered('invuln')) return;
+    // armor soaks damage first
+    if (this.armor > 0) {
+      const soak = Math.min(this.armor, amount);
+      this.armor -= soak;
+      amount -= soak;
+    }
+    if (amount <= 0) return;
     this.health -= amount;
     if (this.health <= 0) {
       this.health = 0;
@@ -154,6 +192,8 @@ export class World2 {
   gangRemaps = new Map<GangId, number>();
   /** phone missions */
   missions = new MissionManager();
+  /** active kill frenzy (powerup) */
+  frenzy: { timeLeft: number; kills: number; goal: number; reward: number } | null = null;
   /** entity ids exempt from distance despawn (mission targets) */
   private protectedPeds = new Set<number>();
   private protectedCars = new Set<number>();
@@ -205,6 +245,7 @@ export class World2 {
 
   /** Score points with the big green world-space popup. */
   private award(amount: number, pos: Vec2, label?: string): void {
+    amount *= this.player.multiplier;
     this.player.score += amount;
     this.emit({ type: 'score', pos: { ...pos }, amount, label });
   }
@@ -259,6 +300,7 @@ export class World2 {
 
   /** Points + heat for a ped the player killed. */
   private awardKill(ped: Ped2): void {
+    if (this.frenzy) this.frenzy.kills++;
     this.award(ped.isCop ? 150 : 50, ped.pos);
     this.wanted.add(ped.isCop ? HEAT_PER.copKilled : HEAT_PER.pedKilled);
     // killing a gang member angers them — and pleases their rivals
@@ -279,6 +321,11 @@ export class World2 {
     return (this.gangRespect.get(id) ?? 0) <= -20;
   }
 
+  /** invisibility powerup: cops and gangs can't see the player */
+  playerInvisible(): boolean {
+    return this.player.powered('invis');
+  }
+
   // ------------------------------------------------------------- spawning
 
   private placePickups(): void {
@@ -286,6 +333,7 @@ export class World2 {
       'pistol', 'dual_pistol', 'uzi', 's_uzi', 'silenced_s_uzi', 'shotgun',
       'flamethrower', 'electrogun', 'grenade', 'molotov', 'rocket',
       'health', 'health', 'health',
+      ...POWERUP_KINDS,
     ];
     const near = this.pavementSpawns
       .filter((s) => dist(s, this.player.pos) < 30)
@@ -377,6 +425,8 @@ export class World2 {
     }
     const player = this.player;
     player.inventory.tick(dt);
+    player.tickPowerups(dt);
+    this.updateFrenzy(dt);
 
     if (!player.dead) {
       if (input.enterExit) this.toggleEnterExit();
@@ -408,11 +458,12 @@ export class World2 {
     this.bailFromBurningCars();
     this.resolveCarCollisions();
     for (const ped of this.peds) {
-      if (ped instanceof Cop) {
+      if (ped instanceof Cop && !this.playerInvisible()) {
         const verdict = ped.updateCop(dt, this.map, this.rng, this.emit, player, this.wanted.level, this.bullets);
         if (verdict === 'arrest') this.bust();
       } else if (ped instanceof GangMember) {
-        ped.updateMember(dt, this.map, this.rng, this.emit, player, this.isGangHostile(ped.gang.id), this.bullets);
+        const hostile = this.isGangHostile(ped.gang.id) && !this.playerInvisible();
+        ped.updateMember(dt, this.map, this.rng, this.emit, player, hostile, this.bullets);
       } else {
         ped.update(dt, this.map, this.rng, this.emit);
       }
@@ -531,6 +582,7 @@ export class World2 {
     const player = this.player;
     if (!player.inventory.tryFire()) return;
     const def = player.inventory.currentDef();
+    const dmgScale = player.powered('double') ? 2 : 1;
     if (def.kind !== 'flame' && def.kind !== 'beam') {
       this.emit({ type: 'shot', weapon: def.id, pos: { ...player.pos } });
     }
@@ -546,7 +598,7 @@ export class World2 {
           if (dist(ped.pos, player.pos) > def.range + PED_RADIUS) continue;
           const a = Math.atan2(ped.pos.y - player.pos.y, ped.pos.x - player.pos.x);
           if (Math.abs(angleDiff(player.heading, a)) < 1.1) {
-            ped.applyDamage(def.pedDamage, this.emit, player.pos);
+            ped.applyDamage(def.pedDamage * dmgScale, this.emit, player.pos);
             this.emit({ type: 'hit', pos: { ...ped.pos }, surface: 'ped' });
             if (ped.dead) this.awardKill(ped);
             return;
@@ -563,13 +615,18 @@ export class World2 {
             x: origin.x + Math.cos(player.heading + Math.PI / 2) * side,
             y: origin.y + Math.sin(player.heading + Math.PI / 2) * side,
           };
-          this.bullets.push(new Bullet(o, player.z + 0.5, a, def));
+          const round = new Bullet(o, player.z + 0.5, a, def);
+          round.pedDamage *= dmgScale;
+          round.carDamage *= dmgScale;
+          this.bullets.push(round);
         }
         panicNearby(this.peds, player.pos, def.silenced ? 0.9 : undefined);
         return;
       }
       case 'rocket': {
         const rocket = new Bullet(origin, player.z + 0.5, player.heading, def);
+        rocket.pedDamage *= dmgScale;
+        rocket.carDamage *= dmgScale;
         rocket.isRocket = true;
         this.bullets.push(rocket);
         panicNearby(this.peds, player.pos);
@@ -589,7 +646,7 @@ export class World2 {
         return;
       }
       case 'beam': {
-        this.fireBeam(def.range, def.pedDamage, def.carDamage);
+        this.fireBeam(def.range, def.pedDamage * dmgScale, def.carDamage * dmgScale);
         if (this.rng.chance(0.2)) panicNearby(this.peds, player.pos);
         return;
       }
@@ -898,9 +955,11 @@ export class World2 {
 
   /** Spawn/retire police pressure to match the wanted level. */
   private maintainPolice(dt: number): void {
-    // Pursuit driving every tick.
-    for (const p of this.pursuits) {
-      if (p.update(dt, this.player, this.map, this.rng) === 'deploy') this.deployCops(p.car);
+    // Pursuit driving every tick (invisible players shake the heat off).
+    if (!this.playerInvisible()) {
+      for (const p of this.pursuits) {
+        if (p.update(dt, this.player, this.map, this.rng) === 'deploy') this.deployCops(p.car);
+      }
     }
 
     this.policeTimer -= dt;
@@ -1052,9 +1111,13 @@ export class World2 {
     p.pos = { x: station.x, y: station.y };
     p.z = station.z;
     p.car = null;
-    p.inventory.ammo.clear();
-    p.inventory.ammo.set('fists', Infinity);
-    p.inventory.current = 'fists';
+    if (p.jailFree > 0) {
+      p.jailFree--; // the card keeps your arsenal
+    } else {
+      p.inventory.ammo.clear();
+      p.inventory.ammo.set('fists', Infinity);
+      p.inventory.current = 'fists';
+    }
     this.wanted.clear();
     // pursuit breaks off; officers head back to their day
     this.pursuits = [];
@@ -1081,14 +1144,53 @@ export class World2 {
       if (this.player.dead || this.player.car) continue;
       if (Math.abs(p.z - this.player.z) > 1) continue;
       if (dist(p.pos, this.player.pos) < PLAYER_RADIUS + 0.25) {
-        if (p.kind === 'health') {
-          this.player.health = Math.min(100, this.player.health + 50);
-        } else {
-          this.player.inventory.add(p.kind, WEAPONS[p.kind].pickupAmmo);
-        }
-        p.respawnIn = PICKUP_RESPAWN;
+        this.collectPickup(p.kind);
+        p.respawnIn = PICKUP_RESPAWN * (POWERUP_KINDS.includes(p.kind as PowerupKind) ? 2 : 1);
         this.emit({ type: 'pickup', pos: { ...p.pos }, kind: p.kind });
       }
+    }
+  }
+
+  private collectPickup(kind: PickupKind): void {
+    const pl = this.player;
+    switch (kind) {
+      case 'health': pl.health = Math.min(100, pl.health + 50); return;
+      case 'armor': pl.armor = 100; return;
+      case 'bribe': this.wanted.clear(); return;
+      case 'jailfree': pl.jailFree++; return;
+      case 'multiplier': pl.multiplier = Math.min(5, pl.multiplier + 1); return;
+      case 'invuln': pl.timers.set('invuln', POWERUP_TIME); return;
+      case 'invis': pl.timers.set('invis', POWERUP_TIME); return;
+      case 'double': pl.timers.set('double', POWERUP_TIME); return;
+      case 'reload': pl.timers.set('reload', POWERUP_TIME); return;
+      case 'respect':
+        for (const t of this.turfs) this.changeRespect(t.gang.id, 20);
+        return;
+      case 'instagang':
+        // simplified instant gang: every gang likes you, hostilities end
+        for (const t of this.turfs) this.gangRespect.set(t.gang.id, Math.max(30, this.gangRespect.get(t.gang.id) ?? 0));
+        return;
+      case 'frenzy':
+        this.frenzy = { timeLeft: FRENZY_TIME, kills: 0, goal: FRENZY_GOAL, reward: FRENZY_REWARD };
+        this.emit({ type: 'frenzy_start', pos: { ...pl.pos } });
+        return;
+      default:
+        pl.inventory.add(kind, WEAPONS[kind].pickupAmmo);
+    }
+  }
+
+  private updateFrenzy(dt: number): void {
+    if (!this.frenzy) return;
+    if (this.frenzy.kills >= this.frenzy.goal) {
+      this.award(this.frenzy.reward, this.player.pos);
+      this.frenzy = null;
+      this.emit({ type: 'frenzy_passed', pos: { ...this.player.pos } });
+      return;
+    }
+    this.frenzy.timeLeft -= dt;
+    if (this.frenzy.timeLeft <= 0 || this.player.dead) {
+      this.frenzy = null;
+      this.emit({ type: 'frenzy_failed', pos: { ...this.player.pos } });
     }
   }
 

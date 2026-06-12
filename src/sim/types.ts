@@ -104,4 +104,7 @@ export type GameEvent =
   | { type: 'mission_start'; pos: Vec2; text: string }
   | { type: 'mission_complete'; pos: Vec2 }
   | { type: 'mission_failed'; pos: Vec2 }
-  | { type: 'phone_ring'; pos: Vec2 };
+  | { type: 'phone_ring'; pos: Vec2 }
+  | { type: 'frenzy_start'; pos: Vec2 }
+  | { type: 'frenzy_passed'; pos: Vec2 }
+  | { type: 'frenzy_failed'; pos: Vec2 };

@@ -342,13 +342,13 @@ describe.skipIf(!haveData)('World2 on Downtown', () => {
   });
 
   it('collects pickups', () => {
-    const pk = world.pickups.find((p) => p.kind !== 'health') ?? world.pickups[0];
+    const pk = world.pickups.find((p) => p.kind === 'pistol') ?? world.pickups[0];
     world.player.pos = { ...pk.pos };
     world.player.z = pk.z;
     world.update(1 / 60, NEUTRAL);
     expect(pk.respawnIn).toBeGreaterThan(0);
-    if (pk.kind !== 'health') {
-      expect(world.player.inventory.has(pk.kind)).toBe(true);
+    if (pk.kind === 'pistol') {
+      expect(world.player.inventory.has('pistol')).toBe(true);
     }
   });
 });
@@ -494,5 +494,80 @@ describe.skipIf(!haveData)('vaulting and wrecks', () => {
     // the mover must not have passed through the wreck
     expect(mover.pos.x).toBeLessThan(wreck.pos.x - (mover.length + wreck.length) / 2 + 0.45);
     expect(wreck.pos.x).toBeCloseTo(100.5, 0); // the wreck never moved
+  });
+});
+
+describe.skipIf(!haveData)('powerups', () => {
+  const map = haveData ? new CityMap(parseGmp(load('wil.gmp'))) : (null as unknown as CityMap);
+  const sty = haveData ? parseSty(load('wil.sty')) : (null as unknown as ReturnType<typeof parseSty>);
+  const collect = (w: World2, kind: string) =>
+    (w as unknown as { collectPickup(k: string): void }).collectPickup(kind);
+
+  it('armor soaks damage before health; invulnerability blocks it all', () => {
+    const w = new World2(map, sty, 51);
+    collect(w, 'armor');
+    w.player.applyDamage(60);
+    expect(w.player.health).toBe(100);
+    expect(w.player.armor).toBe(40);
+    w.player.applyDamage(60);
+    expect(w.player.armor).toBe(0);
+    expect(w.player.health).toBe(80);
+    collect(w, 'invuln');
+    w.player.applyDamage(500);
+    expect(w.player.health).toBe(80);
+  });
+
+  it('bribe clears wanted; multiplier scales score; respect raises all gangs', () => {
+    const w = new World2(map, sty, 52);
+    w.wanted.add(2000);
+    collect(w, 'bribe');
+    expect(w.wanted.level).toBe(0);
+    collect(w, 'multiplier');
+    const s0 = w.player.score;
+    (w as unknown as { award(a: number, p: unknown): void }).award(100, w.player.pos);
+    expect(w.player.score).toBe(s0 + 200);
+    collect(w, 'respect');
+    for (const t of w.turfs) expect(w.gangRespect.get(t.gang.id) ?? 0).toBeGreaterThan(0);
+  });
+
+  it('jail-free card keeps weapons through a bust', () => {
+    const w = new World2(map, sty, 53);
+    collect(w, 'jailfree');
+    w.player.inventory.add('shotgun', 10);
+    w.wanted.add(1000);
+    (w as unknown as { bust(): void }).bust();
+    expect(w.player.inventory.has('shotgun')).toBe(true);
+    expect(w.player.jailFree).toBe(0);
+    // without a card the next bust confiscates
+    w.player.inventory.add('shotgun', 10);
+    (w as unknown as { bust(): void }).bust();
+    expect(w.player.inventory.has('shotgun')).toBe(false);
+  });
+
+  it('kill frenzy: reaching the goal pays out, timeout fails', () => {
+    const w = new World2(map, sty, 54);
+    collect(w, 'frenzy');
+    expect(w.frenzy).not.toBeNull();
+    w.frenzy!.kills = w.frenzy!.goal;
+    const s0 = w.player.score;
+    w.update(1 / 60, NEUTRAL);
+    expect(w.player.score).toBeGreaterThan(s0);
+    expect(w.frenzy).toBeNull();
+    expect(w.drainEvents().some((e) => e.type === 'frenzy_passed')).toBe(true);
+    // timeout path
+    collect(w, 'frenzy');
+    w.frenzy!.timeLeft = 0.01;
+    w.update(1 / 60, NEUTRAL);
+    expect(w.frenzy).toBeNull();
+    expect(w.drainEvents().some((e) => e.type === 'frenzy_failed')).toBe(true);
+  });
+
+  it('fast reload halves the fire interval while active', () => {
+    const w = new World2(map, sty, 55);
+    collect(w, 'reload');
+    w.player.tickPowerups(0.01);
+    expect(w.player.inventory.intervalScale).toBe(0.5);
+    w.player.tickPowerups(30);
+    expect(w.player.inventory.intervalScale).toBe(1);
   });
 });

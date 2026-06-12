@@ -169,7 +169,33 @@ const PICKUP_SPRITES: Record<Pickup['kind'], number> = {
   electrogun: 74,
   flamethrower: 82,
   uzi: 90,
+  // powerup badges: the round codeObj icons, tinted per kind below
   health: 10,
+  armor: 11,
+  bribe: 12,
+  jailfree: 13,
+  multiplier: 14,
+  frenzy: 11,
+  invuln: 12,
+  invis: 13,
+  double: 14,
+  reload: 11,
+  respect: 12,
+  instagang: 13,
+};
+/** single-frame pickups (everything that isn't 8-frame weapon art) */
+const PICKUP_STATIC = new Set<Pickup['kind']>([
+  'health', 'armor', 'bribe', 'jailfree', 'multiplier', 'frenzy',
+  'invuln', 'invis', 'double', 'reload', 'respect', 'instagang',
+]);
+const PICKUP_TINTS: Partial<Record<Pickup['kind'], number>> = {
+  frenzy: 0xff6a6a,
+  invuln: 0xffd700,
+  invis: 0x86e2ff,
+  double: 0xff9090,
+  reload: 0x90ff90,
+  respect: 0xc890ff,
+  instagang: 0xffb868,
 };
 const PICKUP_FRAMES = 8;
 
@@ -206,8 +232,25 @@ function showMsg(text: string, seconds = 2.5): void {
 }
 
 function updateHud(w: World2): void {
-  // GTA2 health: a row of red hearts, one per 20 HP.
+  // GTA2 health: a row of red hearts, one per 20 HP; armor as blue shields.
   $('hud-health').textContent = '\u2665'.repeat(Math.max(0, Math.ceil(w.player.health / 20)));
+  $('hud-armor').textContent = '\u25C8'.repeat(Math.max(0, Math.ceil(w.player.armor / 25)));
+  // active powerups + multiplier + jail card
+  const bits: string[] = [];
+  if (w.player.multiplier > 1) bits.push(`x${w.player.multiplier}`);
+  if (w.player.jailFree > 0) bits.push('CARD');
+  for (const k of ['invuln', 'invis', 'double', 'reload'] as const) {
+    const t = w.player.timers.get(k);
+    if (t) bits.push(`${k.toUpperCase()} ${Math.ceil(t)}`);
+  }
+  $('hud-power').textContent = bits.join('  ');
+  // kill frenzy progress in the mission-text slot
+  if (w.frenzy) {
+    showMissionText(
+      `KILL FRENZY!  ${w.frenzy.kills}/${w.frenzy.goal} — ${Math.ceil(w.frenzy.timeLeft)}s`,
+      0.5,
+    );
+  }
   $('hud-weapon').textContent = w.player.car ? 'DRIVING' : w.player.inventory.currentDef().name;
   const ammo = w.player.inventory.currentAmmo();
   $('hud-ammo').textContent = !w.player.car && Number.isFinite(ammo) ? `× ${ammo}` : '';
@@ -447,14 +490,15 @@ function entities(w: World2): RenderEntity[] {
   });
   w.pickups.forEach((pk, i) => {
     if (pk.respawnIn > 0) return;
-    // health is a single sprite; weapons have 8 rotation frames of art
-    const frame = pk.kind === 'health' ? 0 : Math.floor(w.time * 9 + i) % PICKUP_FRAMES;
+    // powerup badges are single sprites; weapons have 8 rotation frames
+    const frame = PICKUP_STATIC.has(pk.kind) ? 0 : Math.floor(w.time * 9 + i) % PICKUP_FRAMES;
     out.push({
       key: `pickup:${i}`,
       sprite: OBJ_SPRITE_BASE + PICKUP_SPRITES[pk.kind] + frame,
       x: pk.pos.x, y: pk.pos.y, z: pk.z + 0.04,
       angle: 0,
       scale: 0.9,
+      tint: PICKUP_TINTS[pk.kind],
     });
   });
   return out;
@@ -598,8 +642,17 @@ function tick(now: number): void {
       } else if (e.type === 'car_enter' && e.jacked) {
         audio.playVocal(Math.random() < 0.5 ? 'carjacker' : 'gta');
       } else if (e.type === 'pickup' && e.kind) {
-        const v = PICKUP_VOCALS[e.kind];
+        const v = POWERUP_VOCALS[e.kind] ?? PICKUP_VOCALS[e.kind];
         if (v) audio.playVocal(v);
+      } else if (e.type === 'frenzy_start') {
+        showMsg('KILL FRENZY!', 3);
+        audio.playVocal('killfrenzy', { priority: true });
+      } else if (e.type === 'frenzy_passed') {
+        showMsg('FRENZY PASSED!', 3);
+        audio.playVocal('frenzypassed', { priority: true });
+      } else if (e.type === 'frenzy_failed') {
+        showMsg('FRENZY FAILED', 3);
+        audio.playVocal('frenzyfail', { priority: true });
       } else if (e.type === 'score') {
         // announcer taunts: always for cop kills, occasionally otherwise
         if (e.amount === 150) audio.playVocal('copkilla');
@@ -838,6 +891,12 @@ const PICKUP_VOCALS: Record<string, string> = {
   silenced_s_uzi: 'silentmg', shotgun: 'shotgun', rocket: 'rocketl',
   electrogun: 'electrofingers', flamethrower: 'flamet', molotov: 'molotovs',
   grenade: 'grenades', health: 'health',
+};
+const POWERUP_VOCALS: Record<string, string> = {
+  armor: 'armour', bribe: 'copbribe', jailfree: 'getoutjail',
+  multiplier: 'multiplyer', invuln: 'invulnerability', invis: 'invisibility',
+  double: 'doubledamage', reload: 'fastreload', respect: 'respect',
+  instagang: 'instantgang',
 };
 const KILL_TAUNTS = [
   'sorryaboutthat', 'thatsgottahurt', 'oohdidthathurt', 'sorrydidthathurt',

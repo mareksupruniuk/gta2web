@@ -165,6 +165,8 @@ export class Flame {
 export class Inventory {
   ammo = new Map<WeaponId, number>([['fists', Infinity]]);
   current: WeaponId = 'fists';
+  /** fire-interval multiplier (fast-reload powerup sets 0.5) */
+  intervalScale = 1;
   private cooldown = 0;
 
   has(id: WeaponId): boolean {
@@ -207,7 +209,7 @@ export class Inventory {
         this.current = 'fists';
       }
     }
-    this.cooldown = def.fireInterval;
+    this.cooldown = def.fireInterval * this.intervalScale;
     return true;
   }
 }
