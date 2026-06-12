@@ -152,6 +152,13 @@ export class AudioManager {
   private crowdIntensity = 0;
   private nextChatterAt = 0;
 
+  /** Street ambience extras: birds, distant horns, traffic hum. */
+  private ambienceActive = false;
+  private nextBirdAt = 0;
+  private nextDistantHornAt = 0;
+  private trafficLoop: LoopVoice | null = null;
+  private trafficIntensity = 0;
+
   /** End times (ctx time) of currently-playing one-shot voices. */
   private voiceEnds: number[] = [];
   /** Last trigger time (ctx time) per event key, for rate limiting. */
@@ -487,9 +494,62 @@ export class AudioManager {
   /** Very quiet city ambience bed (low wind/rumble), barely audible. */
   setAmbience(active: boolean): void {
     if (!this.ready()) return;
+    this.ambienceActive = active;
     if (!this.ambienceLoop && active) this.ambienceLoop = this.createAmbienceLoop(this.ctx!);
     if (!this.ambienceLoop) return;
     this.ambienceLoop.gain.gain.setTargetAtTime(active ? 0.045 : 0, this.ctx!.currentTime, 0.4);
+  }
+
+  /**
+   * Distant traffic hum, 0..1 by how busy the streets around the player are.
+   * A lowpassed rumble loop whose level follows the intensity.
+   */
+  setTraffic(intensity: number): void {
+    if (!this.ready()) return;
+    this.trafficIntensity = Math.min(1, Math.max(0, intensity));
+    if (!this.trafficLoop && this.trafficIntensity > 0) {
+      const ctx = this.ctx!;
+      const src = ctx.createBufferSource();
+      src.buffer = this.brownNoiseBuffer!;
+      src.loop = true;
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.value = 160;
+      filter.Q.value = 0.4;
+      const gain = ctx.createGain();
+      gain.gain.value = 0;
+      src.connect(filter);
+      filter.connect(gain);
+      gain.connect(this.master!);
+      src.start();
+      this.trafficLoop = { gain };
+    }
+    if (this.trafficLoop) {
+      this.trafficLoop.gain.gain.setTargetAtTime(0.10 * this.trafficIntensity, this.ctx!.currentTime, 0.8);
+    }
+  }
+
+  /** Short synth bird chirp: a few quick descending blips. */
+  private playBirdChirp(): void {
+    const ctx = this.ctx!;
+    const t0 = ctx.currentTime;
+    const blips = 2 + Math.floor(Math.random() * 3);
+    const base = 2800 + Math.random() * 1400;
+    for (let i = 0; i < blips; i++) {
+      const t = t0 + i * (0.09 + Math.random() * 0.05);
+      const osc = ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(base + Math.random() * 500, t);
+      osc.frequency.exponentialRampToValueAtTime(base * 0.72, t + 0.07);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(0.025 + Math.random() * 0.02, t + 0.012);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.08);
+      osc.connect(g);
+      g.connect(this.master!);
+      osc.start(t);
+      osc.stop(t + 0.1);
+    }
   }
 
   /**
@@ -533,6 +593,18 @@ export class AudioManager {
         this.playBankSample(idx, (0.05 + Math.random() * 0.07) * this.crowdIntensity);
         // 2-6s spacing, biased shorter as the crowd gets denser.
         this.nextChatterAt = now + 2 + (1 - this.crowdIntensity) * 2 + Math.random() * 2;
+      }
+    }
+    // Street ambience extras while in-game: birds + distant horns.
+    if (this.ambienceActive && this.enabled && this.ready()) {
+      if (now >= this.nextBirdAt) {
+        this.playBirdChirp();
+        this.nextBirdAt = now + 3 + Math.random() * 7;
+      }
+      if (now >= this.nextDistantHornAt) {
+        // a far-off honk, quiet and pitch-shifted, denser when streets are busy
+        this.playHorn(0.06 + 0.08 * this.trafficIntensity);
+        this.nextDistantHornAt = now + 8 + Math.random() * 14;
       }
     }
   }

@@ -144,8 +144,8 @@ export class World2 {
   private roadblockTimer = 8;
   /** gang turf rects (ZONE type 14) */
   turfs: GangTurf[] = [];
-  /** gangs the player has provoked (kill a member -> hostile) */
-  gangHostile = new Set<GangId>();
+  /** gang respect: -100 (hated) .. 100 (allied); hostile at <= -20 */
+  gangRespect = new Map<GangId, number>();
   /** phone missions */
   missions = new MissionManager();
   /** entity ids exempt from distance despawn (mission targets) */
@@ -201,6 +201,11 @@ export class World2 {
     this.emit({ type: 'score', pos: { ...pos }, amount, label });
   }
 
+  /** Is this car a police vehicle? (siren light rendering) */
+  isCopCar(id: number): boolean {
+    return this.copCarIds.has(id);
+  }
+
   /** Mission-system access: pavement spawn spots. */
   pavementSpots(): { x: number; y: number; z: number }[] {
     return this.pavementSpawns;
@@ -248,8 +253,22 @@ export class World2 {
   private awardKill(ped: Ped2): void {
     this.award(ped.isCop ? 150 : 50, ped.pos);
     this.wanted.add(ped.isCop ? HEAT_PER.copKilled : HEAT_PER.pedKilled);
-    // killing a gang member turns the whole gang hostile
-    if (ped instanceof GangMember) this.gangHostile.add(ped.gang.id);
+    // killing a gang member angers them — and pleases their rivals
+    if (ped instanceof GangMember) {
+      this.changeRespect(ped.gang.id, -15);
+      for (const t of this.turfs) {
+        if (t.gang.id !== ped.gang.id) this.changeRespect(t.gang.id, 3);
+      }
+    }
+  }
+
+  changeRespect(id: GangId, delta: number): void {
+    const v = (this.gangRespect.get(id) ?? 0) + delta;
+    this.gangRespect.set(id, Math.max(-100, Math.min(100, v)));
+  }
+
+  isGangHostile(id: GangId): boolean {
+    return (this.gangRespect.get(id) ?? 0) <= -20;
   }
 
   // ------------------------------------------------------------- spawning
@@ -309,6 +328,7 @@ export class World2 {
   private spawnParkedCarNearPlayer(): void {
     const near = this.roadSpawns
       .filter((s) => dist(s, this.player.pos) < 14)
+      .filter((s) => this.cars.every((c) => dist(c.pos, s) > 1.8))
       .sort((a, b) => dist(a, this.player.pos) - dist(b, this.player.pos));
     if (near.length === 0) return;
     const s = near[0];
@@ -374,7 +394,7 @@ export class World2 {
         const verdict = ped.updateCop(dt, this.map, this.rng, this.emit, player, this.wanted.level, this.bullets);
         if (verdict === 'arrest') this.bust();
       } else if (ped instanceof GangMember) {
-        ped.updateMember(dt, this.map, this.rng, this.emit, player, this.gangHostile.has(ped.gang.id), this.bullets);
+        ped.updateMember(dt, this.map, this.rng, this.emit, player, this.isGangHostile(ped.gang.id), this.bullets);
       } else {
         ped.update(dt, this.map, this.rng, this.emit);
       }

@@ -4,7 +4,8 @@ import { Car2 } from './car2';
 import { ArrowDirs, CityMap } from './citymap';
 
 const CRUISE_SPEED = 2.1;
-const AHEAD_BRAKE_DIST = 1.1;
+/** brake when an obstacle is closer than own half-length + this gap */
+const AHEAD_BRAKE_GAP = 1.0;
 
 type DirName = 'west' | 'east' | 'north' | 'south';
 
@@ -73,7 +74,7 @@ export class TrafficAI {
       const oy = o.y - car.pos.y;
       const along = ox * hx + oy * hy;
       const side = Math.abs(-ox * hy + oy * hx);
-      if (along > 0.1 && along < AHEAD_BRAKE_DIST && side < car.width + 0.15) {
+      if (along > 0.1 && along < car.length / 2 + AHEAD_BRAKE_GAP && side < car.width + 0.15) {
         blocked = true;
         break;
       }

@@ -71,6 +71,15 @@
         display: none;
       }
       #hud.visible { display: block; }
+      #gangs { margin-top: 10px; font-size: 12px; letter-spacing: 1px; }
+      #gangs .gang { margin-top: 2px; }
+      #gangs .gname.g-yakuza { color: #7db4ff; }
+      #gangs .gname.g-loonies { color: #7dff8a; }
+      #gangs .gname.g-zaibatsu { color: #cfcfd6; }
+      #gangs .stance.hostile { color: #ff5050; }
+      #gangs .stance.wary { color: #ffae42; }
+      #gangs .stance.neutral { color: #aaa; }
+      #gangs .stance.allied { color: #5aff5a; }
       #hud .score {
         color: #6f6; font-family: 'Courier New', monospace; font-weight: bold;
         font-size: 24px; background: rgba(0,24,0,0.72);
@@ -136,6 +145,7 @@
     <div id="game"></div>
     <div id="hud">
       <span class="score">$<span id="hud-score">0</span></span>
+      <div id="gangs"></div>
     </div>
     <div id="hud-right">
       <div class="health" id="hud-health"></div>

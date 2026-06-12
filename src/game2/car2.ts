@@ -102,6 +102,8 @@ export class Car2 {
   exploded = false;
   /** sliding beyond the skid threshold this frame (drives skid-mark decals) */
   skidding = false;
+  /** brake-to-reverse pause: brief stop before reverse engages (GTA2 feel) */
+  private reverseDelay = 0;
   /** GTA2: a badly damaged car catches fire and burns before exploding. */
   onFire = false;
   private burnTime = 0;
@@ -202,10 +204,19 @@ export class Car2 {
     if (this.driver) {
       if (throttle > 0) fwd += throttle * h.accel[gear] * dt;
       else if (throttle < 0) {
-        if (fwd > 0.15) fwd -= h.brakeDecel * -throttle * dt; // braking
-        else fwd += throttle * h.accel[0] * 0.8 * dt; // reversing
+        if (fwd > 0.15) {
+          // braking: stop first, reverse only engages after a short pause
+          fwd = Math.max(0, fwd - h.brakeDecel * -throttle * dt);
+          this.reverseDelay = 0.3;
+        } else if (this.reverseDelay > 0) {
+          this.reverseDelay -= dt;
+          fwd = Math.max(0, fwd - h.brakeDecel * dt);
+        } else {
+          fwd += throttle * h.accel[0] * 0.8 * dt; // reversing
+        }
       }
-      if (handbrake && fwd > 0.1) fwd = Math.max(0, fwd - 2.5 * dt);
+      // handbrake locks the wheels: strong longitudinal drag + the slide
+      if (handbrake && fwd > 0.1) fwd = Math.max(0, fwd - 7 * dt);
     }
     const drag = this.driver && throttle !== 0 ? 0.25 : 1.4;
     fwd -= fwd * drag * dt;

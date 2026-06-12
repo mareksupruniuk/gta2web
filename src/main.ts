@@ -115,6 +115,23 @@ function updateHud(w: World2): void {
   const ammo = w.player.inventory.currentAmmo();
   $('hud-ammo').textContent = !w.player.car && Number.isFinite(ammo) ? `× ${ammo}` : '';
   $('hud-score').textContent = String(w.player.score);
+  // gang attitudes (respect): name + stance, GTA2-style
+  const gangsEl = $('gangs');
+  const seen = new Set<string>();
+  const rows: string[] = [];
+  for (const t of w.turfs) {
+    if (seen.has(t.gang.id)) continue;
+    seen.add(t.gang.id);
+    const r = w.gangRespect.get(t.gang.id) ?? 0;
+    const stance = r <= -20 ? 'HOSTILE' : r < 0 ? 'WARY' : r < 30 ? 'NEUTRAL' : 'ALLIED';
+    const cls = stance.toLowerCase();
+    rows.push(`<div class="gang"><span class="gname g-${t.gang.id}">${t.gang.name.toUpperCase()}</span> <span class="stance ${cls}">${stance}</span></div>`);
+  }
+  if (gangsEl.dataset.html !== rows.join('')) {
+    gangsEl.dataset.html = rows.join('');
+    gangsEl.innerHTML = rows.join('');
+  }
+
   const wantedEl = $('wanted');
   const lvl = w.wanted.level;
   wantedEl.classList.toggle('visible', lvl > 0);
@@ -239,12 +256,19 @@ function entities(w: World2): RenderEntity[] {
     // Visible damage: deltas 0-3 are the four corner dents, 4 the smashed
     // windscreen (docs/gta2-reference.md §6) — pile them on as health drops.
     const dents = car.exploded ? 0 : car.health < 15 ? 5 : car.health < 30 ? 4 : car.health < 45 ? 3 : car.health < 60 ? 2 : car.health < 75 ? 1 : 0;
+    const deltas = dents > 0 ? Array.from({ length: dents }, (_, i) => i) : [];
+    // police roof lights: alternate the two flash deltas while heat is on
+    // (cop car deltas 15/16 = left/right strobes, verified by pixel diff)
+    if (!car.exploded && w.isCopCar(car.id) && w.wanted.level > 0) {
+      const nDeltas = s.deltas.get(car.info.spriteIdx)?.length ?? 0;
+      if (nDeltas > 16) deltas.push(Math.floor(w.time * 6) % 2 === 0 ? 15 : 16);
+    }
     out.push({
       key: `car:${car.id}`,
       sprite: car.info.spriteIdx,
       remapPhys: car.remap >= 0 ? s.carRemapPalette(car.remap) : undefined,
       tint: car.exploded ? 0x3a3a3a : undefined,
-      deltas: dents > 0 ? Array.from({ length: dents }, (_, i) => i) : undefined,
+      deltas: deltas.length > 0 ? deltas : undefined,
       x: car.pos.x, y: car.pos.y, z: car.z + 0.05,
       angle: car.heading,
       shadow: !car.exploded,
@@ -558,6 +582,13 @@ function tick(now: number): void {
       if (d < 5) crowd += 1 - d / 5;
     }
     audio.setCrowd(Math.min(1, crowd / 4));
+    // distant traffic hum follows how many cars are driving around the player
+    let movingNear = 0;
+    for (const c of world.cars) {
+      if (c.exploded || c.speed() < 0.5) continue;
+      if (Math.hypot(c.pos.x - world.player.pos.x, c.pos.y - world.player.pos.y) < 14) movingNear++;
+    }
+    audio.setTraffic(Math.min(1, movingNear / 5));
     audio.update(dt);
     updateHud(world);
 
@@ -619,13 +650,28 @@ function tick(now: number): void {
     markers.push({ key: 'objective', x: mission.target.x, y: mission.target.y, z: tz, kind: 'objective' });
   }
   renderer.syncMarkers(markers);
-  // GTA2-style arrow orbiting the player toward the objective
-  if (mission && !paused) {
-    const dxm = mission.target.x - world.player.pos.x;
-    const dym = mission.target.y - world.player.pos.y;
+  // GTA2-style arrow orbiting the player: yellow to the objective, cyan to
+  // the nearest ringing phone when idle.
+  let arrowTarget: { x: number; y: number; color: string } | null = null;
+  if (mission) {
+    arrowTarget = { x: mission.target.x, y: mission.target.y, color: '#ffd700' };
+  } else {
+    let best: { x: number; y: number } | null = null;
+    let bestD = Infinity; // always point at the nearest available phone
+    for (const ph of world.missions.phones) {
+      if (ph.cooldown > 0) continue;
+      const d = Math.hypot(ph.pos.x - world.player.pos.x, ph.pos.y - world.player.pos.y);
+      if (d < bestD) { bestD = d; best = ph.pos; }
+    }
+    if (best && bestD > 1.5) arrowTarget = { ...best, color: '#5adcff' };
+  }
+  if (arrowTarget && !paused) {
+    const dxm = arrowTarget.x - world.player.pos.x;
+    const dym = arrowTarget.y - world.player.pos.y;
     const am = Math.atan2(dym, dxm);
     const r = 70; // px from screen centre
     arrowEl.style.display = 'block';
+    arrowEl.style.color = arrowTarget.color;
     arrowEl.style.transform =
       `translate(${Math.cos(am) * r - 13}px, ${Math.sin(am) * r - 16}px) rotate(${(am * 180) / Math.PI + 90}deg)`;
   } else {

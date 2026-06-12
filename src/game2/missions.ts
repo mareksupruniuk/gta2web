@@ -167,6 +167,11 @@ export class MissionManager {
     const m = this.active!;
     this.active = null;
     world.awardMission(m.reward, m.target);
+    // working for a gang earns their respect and irritates the rivals
+    world.changeRespect(m.gang.id, 25);
+    for (const t of world.turfs) {
+      if (t.gang.id !== m.gang.id) world.changeRespect(t.gang.id, -10);
+    }
     world.emitEvent({ type: 'mission_complete', pos: { ...world.player.pos } });
   }
 

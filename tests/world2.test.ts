@@ -293,7 +293,8 @@ describe.skipIf(!haveData)('World2 on Downtown', () => {
     );
     let minD = d0;
     let busted = false;
-    for (let i = 0; i < 60 * 6; i++) {
+    // road-network pursuit from ~13 blocks out takes ~10 s; allow 12
+    for (let i = 0; i < 60 * 12; i++) {
       world.update(1 / 60, NEUTRAL);
       if (world.drainEvents().some((e) => e.type === 'busted')) busted = true;
       for (const p of world.pursuits) {
@@ -382,7 +383,20 @@ describe.skipIf(!haveData)('gangs on Downtown', () => {
       world.update(1 / 60, { ...NEUTRAL, attack: i % 30 === 0 });
     }
     expect(victim.dead).toBe(true);
-    expect(world.gangHostile.has(victim.gang.id)).toBe(true);
+    expect(world.isGangHostile(victim.gang.id)).toBe(false); // one kill = -15, not hostile yet
+    // a second kill crosses the hostility threshold
+    const second = world.peds.find(
+      (p): p is GangMember => p instanceof GangMember && !p.dead && p.gang.id === victim.gang.id,
+    );
+    if (second) {
+      second.pos = { x: world.player.pos.x + 0.5, y: world.player.pos.y };
+      second.z = world.player.z;
+      world.player.heading = 0;
+      for (let i = 0; i < 120 && !second.dead; i++) {
+        world.update(1 / 60, { ...NEUTRAL, attack: i % 30 === 0 });
+      }
+    }
+    expect(world.isGangHostile(victim.gang.id)).toBe(true);
 
     // a hostile member nearby opens fire (hostile bullets appear)
     const shooter = world.peds.find(
