@@ -119,8 +119,9 @@ export class CityRenderer {
 
   private constructor(mount: HTMLElement, sty: Sty) {
     this.sty = sty;
+    // codeObj 2-7 are the splats; 8/9 are GTA2 logo plates (not blood!)
     const codeObjBase = sty.spriteBase.car + sty.spriteBase.ped;
-    for (let i = 2; i <= 9; i++) this.bloodSprites.push(codeObjBase + i);
+    for (let i = 2; i <= 7; i++) this.bloodSprites.push(codeObjBase + i);
     this.mount = mount;
     this.three = new THREE.WebGLRenderer({ antialias: false });
     this.three.setPixelRatio(Math.min(2, window.devicePixelRatio));

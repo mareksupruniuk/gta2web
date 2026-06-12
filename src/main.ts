@@ -67,7 +67,7 @@ const ANIM = {
   punchStand: { base: 115, frames: 8 },
   punchMove: { base: 123, frames: 8 },
   firing: 139,
-  corpses: [80, 156, 157],
+  corpses: [156, 157],
   burnedCorpse: 155,
 };
 // Pickup art: 8 rotation frames per weapon starting at these obj-sprite bases.

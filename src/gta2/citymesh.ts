@@ -190,10 +190,13 @@ export function buildChunkGeometry(
             );
           }
         } else {
-          // X walls (left/right). Spec: a FLAT side is a thin two-sided face
-          // at its own edge whose reverse shows the OPPOSITE side's graphic —
-          // and the opposite face is NOT drawn at its own edge (that was the
-          // misplaced-fence bug). Both-flat keeps a face at each edge.
+          // Walls drawn at their OWN edges (bushes/trees are boxes with
+          // vegetation on all four faces — removing opposite faces breaks
+          // them). Spec nuance for FLAT faces: the face is transparent and
+          // its REVERSE side shows the opposite side's graphic — emitted as
+          // an extra quad nudged inward so depth testing picks the right one
+          // per viewing side. Both-flat thus yields both tiles at both
+          // positions, exactly as the GMP doc describes.
           const leftAt = (x: number, f: Face): void => {
             const uv = faceUV(atlas, f);
             pushQuad(pick(f), [
@@ -206,18 +209,11 @@ export function buildChunkGeometry(
               [x, by + 1, zSE], [x, by, zNE], [x, by, z], [x, by + 1, z],
             ], uv, WALL_SHADE_X);
           };
-          if (left.flat && !right.flat) {
-            if (left.tile !== 0) leftAt(bx, left);
-            if (right.tile !== 0) rightAt(bx + 0.006, right); // reverse side
-          } else if (right.flat && !left.flat) {
-            if (right.tile !== 0) rightAt(bx + 1, right);
-            if (left.tile !== 0) leftAt(bx + 1 - 0.006, left); // reverse side
-          } else {
-            if (left.tile !== 0) leftAt(bx, left);
-            if (right.tile !== 0) rightAt(bx + 1, right);
-          }
+          if (left.tile !== 0) leftAt(bx, left);
+          if (left.flat && right.tile !== 0) rightAt(bx + 0.006, right); // reverse side
+          if (right.tile !== 0) rightAt(bx + 1, right);
+          if (right.flat && left.tile !== 0) leftAt(bx + 1 - 0.006, left); // reverse side
 
-          // Y walls (top/bottom), same pairing rule.
           const topAt = (y: number, f: Face): void => {
             const uv = faceUV(atlas, f);
             pushQuad(pick(f), [
@@ -230,17 +226,11 @@ export function buildChunkGeometry(
               [bx, y, zSW], [bx + 1, y, zSE], [bx + 1, y, z], [bx, y, z],
             ], uv, WALL_SHADE_Y);
           };
-          if (top.flat && !bottom.flat) {
-            if (top.tile !== 0) topAt(by, top);
-            if (bottom.tile !== 0) bottomAt(by + 0.006, bottom); // reverse side
-          } else if (bottom.flat && !top.flat) {
-            if (bottom.tile !== 0) bottomAt(by + 1, bottom);
-            if (top.tile !== 0) topAt(by + 1 - 0.006, top); // reverse side
-          } else {
-            if (top.tile !== 0) topAt(by, top);
-            if (bottom.tile !== 0) bottomAt(by + 1, bottom);
-          }
-        }
+          if (top.tile !== 0) topAt(by, top);
+          if (top.flat && bottom.tile !== 0) bottomAt(by + 0.006, bottom); // reverse side
+          if (bottom.tile !== 0) bottomAt(by + 1, bottom);
+          if (bottom.flat && top.tile !== 0) topAt(by + 1 - 0.006, top); // reverse side
+                }
       }
     }
   }
