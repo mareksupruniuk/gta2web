@@ -879,6 +879,9 @@ interface FxSettings {
   bloom: number; // 0-100
   vig: number;
   aber: number;
+  pixelate: number; // pixel size, 0 = off
+  posterize: number; // colour levels, 0 = off
+  crt: boolean;
 }
 const FX_PRESETS: Record<string, string> = {
   none: '',
@@ -899,7 +902,7 @@ let timeMode = (localStorage.getItem('gta2.time') ?? 'dusk') as 'day' | 'dusk' |
 
 const FX_DEFAULT: FxSettings = {
   preset: 'cinematic', grain: 8, scan: false, sat: 100, con: 100, bri: 100,
-  shaders: true, bloom: 35, vig: 35, aber: 20,
+  shaders: true, bloom: 35, vig: 35, aber: 20, pixelate: 0, posterize: 0, crt: false,
 };
 let fx: FxSettings = { ...FX_DEFAULT };
 try {
@@ -941,12 +944,27 @@ function applyFx(): void {
   grainEl.style.opacity = String(fx.grain / 100);
   scanEl.classList.toggle('on', fx.scan);
   renderer?.setShaderFx(
-    fx.shaders ? { bloom: fx.bloom / 100, vignette: fx.vig / 100, aberration: fx.aber / 100 } : null,
+    fx.shaders
+      ? {
+          bloom: fx.bloom / 100,
+          vignette: fx.vig / 100,
+          aberration: fx.aber / 100,
+          pixelate: fx.pixelate,
+          posterize: fx.posterize,
+          crt: fx.crt,
+          grain: fx.grain / 100, // grain moves into the shader when it's on
+        }
+      : null,
   );
+  // when the shader chain handles grain, hide the DOM overlay version
+  grainEl.style.opacity = fx.shaders ? '0' : String(fx.grain / 100);
   localStorage.setItem('gta2.fx', JSON.stringify(fx));
 }
 
 const fxShaders = $<HTMLInputElement>('fx-shaders');
+const fxPixel = $<HTMLInputElement>('fx-pixel');
+const fxPoster = $<HTMLInputElement>('fx-poster');
+const fxCrt = $<HTMLInputElement>('fx-crt');
 const fxBloom = $<HTMLInputElement>('fx-bloom');
 const fxVig = $<HTMLInputElement>('fx-vig');
 const fxAber = $<HTMLInputElement>('fx-aber');
@@ -958,6 +976,9 @@ const fxCon = $<HTMLInputElement>('fx-con');
 const fxBri = $<HTMLInputElement>('fx-bri');
 function syncFxPanel(): void {
   fxShaders.checked = fx.shaders;
+  fxPixel.value = String(fx.pixelate);
+  fxPoster.value = String(fx.posterize);
+  fxCrt.checked = fx.crt;
   fxBloom.value = String(fx.bloom);
   fxVig.value = String(fx.vig);
   fxAber.value = String(fx.aber);
@@ -972,6 +993,9 @@ syncFxPanel();
 applyFx();
 $('fx-tab').addEventListener('click', () => $('fx-panel').classList.toggle('open'));
 fxShaders.addEventListener('change', () => { fx.shaders = fxShaders.checked; applyFx(); });
+fxPixel.addEventListener('input', () => { fx.pixelate = +fxPixel.value; applyFx(); });
+fxPoster.addEventListener('input', () => { fx.posterize = +fxPoster.value; applyFx(); });
+fxCrt.addEventListener('change', () => { fx.crt = fxCrt.checked; applyFx(); });
 fxBloom.addEventListener('input', () => { fx.bloom = +fxBloom.value; applyFx(); });
 fxVig.addEventListener('input', () => { fx.vig = +fxVig.value; applyFx(); });
 fxAber.addEventListener('input', () => { fx.aber = +fxAber.value; applyFx(); });

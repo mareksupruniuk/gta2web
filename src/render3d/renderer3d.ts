@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { GmpMap, MAP_SIZE, TileAnimation } from '../gta2/gmp';
@@ -90,14 +91,32 @@ export interface ShaderFx {
   bloom: number; // 0..1
   vignette: number; // 0..1
   aberration: number; // 0..1
+  /** pixel size for retro pixelation (0/1 = off) */
+  pixelate: number;
+  /** colour levels for posterisation (0 = off) */
+  posterize: number;
+  /** CRT mode: barrel curvature + scanline mask */
+  crt: boolean;
+  /** animated in-shader grain, 0..1 */
+  grain: number;
 }
 
-/** Final grading pass: radial chromatic aberration + vignette. */
+/**
+ * Final grading pass: CRT curvature, pixelation, chromatic aberration,
+ * posterisation, animated grain, scanlines and vignette — each gated by
+ * its uniform so unused effects cost nothing visually.
+ */
 const FinalShader = {
   uniforms: {
     tDiffuse: { value: null },
     vig: { value: 0.35 },
     aber: { value: 0.012 },
+    pixelSize: { value: 0 },
+    posterize: { value: 0 },
+    crt: { value: 0 },
+    grain: { value: 0 },
+    time: { value: 0 },
+    res: { value: new THREE.Vector2(1, 1) },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -109,15 +128,46 @@ const FinalShader = {
     uniform sampler2D tDiffuse;
     uniform float vig;
     uniform float aber;
+    uniform float pixelSize;
+    uniform float posterize;
+    uniform float crt;
+    uniform float grain;
+    uniform float time;
+    uniform vec2 res;
     varying vec2 vUv;
+
+    float hash(vec2 p) {
+      return fract(sin(dot(p, vec2(127.1, 311.7)) + time * 13.0) * 43758.5453);
+    }
+
     void main() {
-      vec2 c = vUv - 0.5;
+      vec2 uv = vUv;
+      if (crt > 0.5) {
+        vec2 cc = uv * 2.0 - 1.0;
+        cc *= 1.0 + 0.06 * dot(cc, cc);
+        uv = cc * 0.5 + 0.5;
+        if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+          gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+          return;
+        }
+      }
+      if (pixelSize > 1.0) {
+        uv = (floor(uv * res / pixelSize) + 0.5) * pixelSize / res;
+      }
+      vec2 c = uv - 0.5;
       float d = length(c);
       vec2 off = c * d * aber;
-      float r = texture2D(tDiffuse, vUv + off).r;
-      float g = texture2D(tDiffuse, vUv).g;
-      float b = texture2D(tDiffuse, vUv - off).b;
-      vec3 col = vec3(r, g, b);
+      vec3 col = vec3(
+        texture2D(tDiffuse, uv + off).r,
+        texture2D(tDiffuse, uv).g,
+        texture2D(tDiffuse, uv - off).b
+      );
+      if (posterize > 1.5) col = floor(col * posterize + 0.5) / posterize;
+      if (grain > 0.001) col += (hash(uv * res) * 2.0 - 1.0) * grain;
+      if (crt > 0.5) {
+        col *= 0.88 + 0.12 * sin(uv.y * res.y * 3.14159);
+        col *= 1.04; // make up the scanline loss
+      }
       col *= 1.0 - vig * smoothstep(0.35, 0.8, d);
       gl_FragColor = vec4(col, 1.0);
     }`,
@@ -218,10 +268,19 @@ export class CityRenderer {
       this.composer.addPass(this.bloomPass);
       this.finalPass = new ShaderPass(FinalShader);
       this.composer.addPass(this.finalPass);
+      // linear -> sRGB at the end of the chain; without it the composer
+      // path rendered visibly darker than the plain renderer
+      this.composer.addPass(new OutputPass());
     }
     this.bloomPass!.strength = fx.bloom * 1.1;
-    this.finalPass!.uniforms.vig.value = fx.vignette * 0.9;
-    this.finalPass!.uniforms.aber.value = fx.aberration * 0.035;
+    const u = this.finalPass!.uniforms;
+    u.vig.value = fx.vignette * 0.9;
+    u.aber.value = fx.aberration * 0.035;
+    u.pixelSize.value = fx.pixelate;
+    u.posterize.value = fx.posterize;
+    u.crt.value = fx.crt ? 1 : 0;
+    u.grain.value = fx.grain * 0.28;
+    u.res.value.set(this.mount.clientWidth, this.mount.clientHeight);
   }
 
   // ----------------------------------------------------------------- city
@@ -933,8 +992,12 @@ export class CityRenderer {
     const cy = -(focus.y + this.leadY) + sy;
     this.camera.position.set(cx, cy, focus.z + this.eye);
     this.camera.lookAt(cx, cy, focus.z);
-    if (this.composer) this.composer.render();
-    else this.three.render(this.scene, this.camera);
+    if (this.composer) {
+      if (this.finalPass) (this.finalPass.uniforms.time.value as number) = (this.finalPass.uniforms.time.value + dt) % 64;
+      this.composer.render();
+    } else {
+      this.three.render(this.scene, this.camera);
+    }
   }
 }
 
