@@ -1,4 +1,8 @@
 import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { GmpMap, MAP_SIZE, TileAnimation } from '../gta2/gmp';
 import { Sty } from '../gta2/sty';
 import { buildTileAtlas } from '../gta2/atlas';
@@ -81,6 +85,44 @@ interface Effect {
 const EYE_FOOT = 6.5; // camera height above ground in blocks, walking
 const EYE_DRIVE = 10; // max while driving fast
 
+/** Optional GPU post-processing (FX panel "shaders"). */
+export interface ShaderFx {
+  bloom: number; // 0..1
+  vignette: number; // 0..1
+  aberration: number; // 0..1
+}
+
+/** Final grading pass: radial chromatic aberration + vignette. */
+const FinalShader = {
+  uniforms: {
+    tDiffuse: { value: null },
+    vig: { value: 0.35 },
+    aber: { value: 0.012 },
+  },
+  vertexShader: /* glsl */ `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }`,
+  fragmentShader: /* glsl */ `
+    uniform sampler2D tDiffuse;
+    uniform float vig;
+    uniform float aber;
+    varying vec2 vUv;
+    void main() {
+      vec2 c = vUv - 0.5;
+      float d = length(c);
+      vec2 off = c * d * aber;
+      float r = texture2D(tDiffuse, vUv + off).r;
+      float g = texture2D(tDiffuse, vUv).g;
+      float b = texture2D(tDiffuse, vUv - off).b;
+      vec3 col = vec3(r, g, b);
+      col *= 1.0 - vig * smoothstep(0.35, 0.8, d);
+      gl_FragColor = vec4(col, 1.0);
+    }`,
+};
+
 export class CityRenderer {
   readonly three: THREE.WebGLRenderer;
   readonly scene = new THREE.Scene();
@@ -112,6 +154,10 @@ export class CityRenderer {
   }[] = [];
   private leadX = 0;
   private leadY = 0;
+  /** optional post-processing chain (null = plain render) */
+  private composer: EffectComposer | null = null;
+  private bloomPass: UnrealBloomPass | null = null;
+  private finalPass: ShaderPass | null = null;
   /** pulsing world markers (phones, mission objective) */
   private markers = new Map<string, THREE.Mesh>();
   private markerTime = 0;
@@ -151,9 +197,32 @@ export class CityRenderer {
     const w = this.mount.clientWidth;
     const h = this.mount.clientHeight;
     this.three.setSize(w, h);
+    this.composer?.setSize(w, h);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
   };
+
+  /** Enable/adjust (or null = disable) the GPU post-processing chain. */
+  setShaderFx(fx: ShaderFx | null): void {
+    if (!fx) {
+      this.composer = null;
+      return;
+    }
+    if (!this.composer) {
+      const w = this.mount.clientWidth;
+      const h = this.mount.clientHeight;
+      this.composer = new EffectComposer(this.three);
+      this.composer.setSize(w, h);
+      this.composer.addPass(new RenderPass(this.scene, this.camera));
+      this.bloomPass = new UnrealBloomPass(new THREE.Vector2(w, h), 0.4, 0.5, 0.62);
+      this.composer.addPass(this.bloomPass);
+      this.finalPass = new ShaderPass(FinalShader);
+      this.composer.addPass(this.finalPass);
+    }
+    this.bloomPass!.strength = fx.bloom * 1.1;
+    this.finalPass!.uniforms.vig.value = fx.vignette * 0.9;
+    this.finalPass!.uniforms.aber.value = fx.aberration * 0.035;
+  }
 
   // ----------------------------------------------------------------- city
 
@@ -864,7 +933,8 @@ export class CityRenderer {
     const cy = -(focus.y + this.leadY) + sy;
     this.camera.position.set(cx, cy, focus.z + this.eye);
     this.camera.lookAt(cx, cy, focus.z);
-    this.three.render(this.scene, this.camera);
+    if (this.composer) this.composer.render();
+    else this.three.render(this.scene, this.camera);
   }
 }
 

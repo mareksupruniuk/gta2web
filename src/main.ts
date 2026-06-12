@@ -300,6 +300,7 @@ async function startGame(): Promise<void> {
     (window as unknown as { __world: World2 }).__world = world; // debug/test hook
     renderer = CityRenderer.create($('game'), map.gmp, sty);
     (window as unknown as { __renderer: CityRenderer }).__renderer = renderer;
+    applyFx(); // attach the shader chain to the fresh renderer
 
     // Original GTA2 sound bank for this district (async; synth/CC0 until loaded).
     const actx = audio.audioContext;
@@ -873,6 +874,11 @@ interface FxSettings {
   sat: number; // percent
   con: number;
   bri: number;
+  /** GPU post-processing (bloom/vignette/chromatic aberration), optional */
+  shaders: boolean;
+  bloom: number; // 0-100
+  vig: number;
+  aber: number;
 }
 const FX_PRESETS: Record<string, string> = {
   none: '',
@@ -891,7 +897,10 @@ const TIME_FILTER: Record<string, string> = {
 };
 let timeMode = (localStorage.getItem('gta2.time') ?? 'dusk') as 'day' | 'dusk' | 'dawn';
 
-const FX_DEFAULT: FxSettings = { preset: 'cinematic', grain: 8, scan: false, sat: 100, con: 100, bri: 100 };
+const FX_DEFAULT: FxSettings = {
+  preset: 'cinematic', grain: 8, scan: false, sat: 100, con: 100, bri: 100,
+  shaders: true, bloom: 35, vig: 35, aber: 20,
+};
 let fx: FxSettings = { ...FX_DEFAULT };
 try {
   fx = { ...FX_DEFAULT, ...JSON.parse(localStorage.getItem('gta2.fx') ?? '{}') };
@@ -931,9 +940,16 @@ function applyFx(): void {
   gameEl.style.filter = parts.join(' ').trim();
   grainEl.style.opacity = String(fx.grain / 100);
   scanEl.classList.toggle('on', fx.scan);
+  renderer?.setShaderFx(
+    fx.shaders ? { bloom: fx.bloom / 100, vignette: fx.vig / 100, aberration: fx.aber / 100 } : null,
+  );
   localStorage.setItem('gta2.fx', JSON.stringify(fx));
 }
 
+const fxShaders = $<HTMLInputElement>('fx-shaders');
+const fxBloom = $<HTMLInputElement>('fx-bloom');
+const fxVig = $<HTMLInputElement>('fx-vig');
+const fxAber = $<HTMLInputElement>('fx-aber');
 const fxPreset = $<HTMLSelectElement>('fx-preset');
 const fxGrain = $<HTMLInputElement>('fx-grain');
 const fxScan = $<HTMLInputElement>('fx-scan');
@@ -941,6 +957,10 @@ const fxSat = $<HTMLInputElement>('fx-sat');
 const fxCon = $<HTMLInputElement>('fx-con');
 const fxBri = $<HTMLInputElement>('fx-bri');
 function syncFxPanel(): void {
+  fxShaders.checked = fx.shaders;
+  fxBloom.value = String(fx.bloom);
+  fxVig.value = String(fx.vig);
+  fxAber.value = String(fx.aber);
   fxPreset.value = fx.preset;
   fxGrain.value = String(fx.grain);
   fxScan.checked = fx.scan;
@@ -951,6 +971,10 @@ function syncFxPanel(): void {
 syncFxPanel();
 applyFx();
 $('fx-tab').addEventListener('click', () => $('fx-panel').classList.toggle('open'));
+fxShaders.addEventListener('change', () => { fx.shaders = fxShaders.checked; applyFx(); });
+fxBloom.addEventListener('input', () => { fx.bloom = +fxBloom.value; applyFx(); });
+fxVig.addEventListener('input', () => { fx.vig = +fxVig.value; applyFx(); });
+fxAber.addEventListener('input', () => { fx.aber = +fxAber.value; applyFx(); });
 fxPreset.addEventListener('change', () => { fx.preset = fxPreset.value; applyFx(); });
 fxGrain.addEventListener('input', () => { fx.grain = +fxGrain.value; applyFx(); });
 fxScan.addEventListener('change', () => { fx.scan = fxScan.checked; applyFx(); });
