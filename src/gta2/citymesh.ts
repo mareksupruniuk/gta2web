@@ -170,6 +170,32 @@ export function buildChunkGeometry(
           }
         }
 
+        // Wall emitters shared by the diagonal and regular branches.
+        const leftAt = (x: number, f: Face): void => {
+          const uv = faceUV(atlas, f);
+          pushQuad(pick(f), [
+            [x, by, zNW], [x, by + 1, zSW], [x, by + 1, z], [x, by, z],
+          ], uv, WALL_SHADE_X);
+        };
+        const rightAt = (x: number, f: Face): void => {
+          const uv = faceUV(atlas, f);
+          pushQuad(pick(f), [
+            [x, by + 1, zSE], [x, by, zNE], [x, by, z], [x, by + 1, z],
+          ], uv, WALL_SHADE_X);
+        };
+        const topAt = (y: number, f: Face): void => {
+          const uv = faceUV(atlas, f);
+          pushQuad(pick(f), [
+            [bx + 1, y, zNE], [bx, y, zNW], [bx, y, z], [bx + 1, y, z],
+          ], uv, WALL_SHADE_Y);
+        };
+        const bottomAt = (y: number, f: Face): void => {
+          const uv = faceUV(atlas, f);
+          pushQuad(pick(f), [
+            [bx, y, zSW], [bx + 1, y, zSE], [bx + 1, y, z], [bx, y, z],
+          ], uv, WALL_SHADE_Y);
+        };
+
         if (isDiagonal(slope)) {
           // Diagonal wall across the cut corner; tile comes from the side
           // fields (left for *-left facings, right for *-right facings).
@@ -189,47 +215,56 @@ export function buildChunkGeometry(
               0.85,
             );
           }
+          // The two faces BEHIND the diagonal keep their own graphics (the
+          // GMP doc requires them) — without these, free-standing diagonal
+          // structures showed black holes straight through the world.
+          if (facing === 0) { // cut nw → behind: right, bottom
+            if (right.tile !== 0) rightAt(bx + 1, right);
+            if (bottom.tile !== 0) bottomAt(by + 1, bottom);
+          } else if (facing === 1) { // cut ne → behind: left, bottom
+            if (left.tile !== 0) leftAt(bx, left);
+            if (bottom.tile !== 0) bottomAt(by + 1, bottom);
+          } else if (facing === 2) { // cut sw → behind: right, top
+            if (right.tile !== 0) rightAt(bx + 1, right);
+            if (top.tile !== 0) topAt(by, top);
+          } else { // cut se → behind: left, top
+            if (left.tile !== 0) leftAt(bx, left);
+            if (top.tile !== 0) topAt(by, top);
+          }
         } else {
-          // Walls drawn at their OWN edges (bushes/trees are boxes with
-          // vegetation on all four faces — removing opposite faces breaks
-          // them). Spec nuance for FLAT faces: the face is transparent and
-          // its REVERSE side shows the opposite side's graphic — emitted as
-          // an extra quad nudged inward so depth testing picks the right one
-          // per viewing side. Both-flat thus yields both tiles at both
-          // positions, exactly as the GMP doc describes.
-          const leftAt = (x: number, f: Face): void => {
-            const uv = faceUV(atlas, f);
-            pushQuad(pick(f), [
-              [x, by, zNW], [x, by + 1, zSW], [x, by + 1, z], [x, by, z],
-            ], uv, WALL_SHADE_X);
-          };
-          const rightAt = (x: number, f: Face): void => {
-            const uv = faceUV(atlas, f);
-            pushQuad(pick(f), [
-              [x, by + 1, zSE], [x, by, zNE], [x, by, z], [x, by + 1, z],
-            ], uv, WALL_SHADE_X);
-          };
-          if (left.tile !== 0) leftAt(bx, left);
-          if (left.flat && right.tile !== 0) rightAt(bx + 0.006, right); // reverse side
-          if (right.tile !== 0) rightAt(bx + 1, right);
-          if (right.flat && left.tile !== 0) leftAt(bx + 1 - 0.006, left); // reverse side
+          // Flat-face rule (GMP doc): a FLAT side is a transparent two-sided
+          // sheet at its own edge; the OPPOSITE side's tile is its reverse
+          // graphic and is NOT drawn at its own edge (drawing it separately
+          // duplicated graffiti/fences one block off). Only when BOTH sides
+          // are flat are "both tiles drawn at both positions".
+          if (left.flat && right.flat) {
+            // both tiles at both positions
+            if (left.tile !== 0) { leftAt(bx, left); leftAt(bx + 1 - 0.006, left); }
+            if (right.tile !== 0) { rightAt(bx + 1, right); rightAt(bx + 0.006, right); }
+          } else if (left.flat) {
+            if (left.tile !== 0) leftAt(bx, left);
+            if (right.tile !== 0) rightAt(bx + 0.006, right); // reverse side only
+          } else if (right.flat) {
+            if (right.tile !== 0) rightAt(bx + 1, right);
+            if (left.tile !== 0) leftAt(bx + 1 - 0.006, left); // reverse side only
+          } else {
+            if (left.tile !== 0) leftAt(bx, left);
+            if (right.tile !== 0) rightAt(bx + 1, right);
+          }
 
-          const topAt = (y: number, f: Face): void => {
-            const uv = faceUV(atlas, f);
-            pushQuad(pick(f), [
-              [bx + 1, y, zNE], [bx, y, zNW], [bx, y, z], [bx + 1, y, z],
-            ], uv, WALL_SHADE_Y);
-          };
-          const bottomAt = (y: number, f: Face): void => {
-            const uv = faceUV(atlas, f);
-            pushQuad(pick(f), [
-              [bx, y, zSW], [bx + 1, y, zSE], [bx + 1, y, z], [bx, y, z],
-            ], uv, WALL_SHADE_Y);
-          };
-          if (top.tile !== 0) topAt(by, top);
-          if (top.flat && bottom.tile !== 0) bottomAt(by + 0.006, bottom); // reverse side
-          if (bottom.tile !== 0) bottomAt(by + 1, bottom);
-          if (bottom.flat && top.tile !== 0) topAt(by + 1 - 0.006, top); // reverse side
+          if (top.flat && bottom.flat) {
+            if (top.tile !== 0) { topAt(by, top); topAt(by + 1 - 0.006, top); }
+            if (bottom.tile !== 0) { bottomAt(by + 1, bottom); bottomAt(by + 0.006, bottom); }
+          } else if (top.flat) {
+            if (top.tile !== 0) topAt(by, top);
+            if (bottom.tile !== 0) bottomAt(by + 0.006, bottom); // reverse side only
+          } else if (bottom.flat) {
+            if (bottom.tile !== 0) bottomAt(by + 1, bottom);
+            if (top.tile !== 0) topAt(by + 1 - 0.006, top); // reverse side only
+          } else {
+            if (top.tile !== 0) topAt(by, top);
+            if (bottom.tile !== 0) bottomAt(by + 1, bottom);
+          }
                 }
       }
     }
