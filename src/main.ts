@@ -780,6 +780,98 @@ btnTime.addEventListener('click', () => {
   audio.uiClick();
 });
 
+// ---------------------------------------------------------------- screen FX
+// CSS-filter colour grading on the world canvas + generated film grain +
+// scanlines, controlled from the in-game FX panel (persisted).
+interface FxSettings {
+  preset: string;
+  grain: number; // 0-30 (percent opacity*100)
+  scan: boolean;
+  sat: number; // percent
+  con: number;
+  bri: number;
+}
+const FX_PRESETS: Record<string, string> = {
+  none: '',
+  cinematic: 'saturate(1.12) contrast(1.06)',
+  vivid: 'saturate(1.5) contrast(1.1)',
+  sepia: 'sepia(0.8) contrast(1.05) brightness(1.02)',
+  grayscale: 'grayscale(1) contrast(1.08)',
+  noir: 'grayscale(1) contrast(1.4) brightness(0.92)',
+  retro: 'sepia(0.25) saturate(1.2) contrast(1.12)',
+};
+const FX_DEFAULT: FxSettings = { preset: 'cinematic', grain: 8, scan: false, sat: 100, con: 100, bri: 100 };
+let fx: FxSettings = { ...FX_DEFAULT };
+try {
+  fx = { ...FX_DEFAULT, ...JSON.parse(localStorage.getItem('gta2.fx') ?? '{}') };
+} catch { /* defaults */ }
+
+const gameEl = $('game');
+const grainEl = $('grain');
+const scanEl = $('scanlines');
+
+// one-time generated noise tile for the grain overlay
+{
+  const c = document.createElement('canvas');
+  c.width = 160;
+  c.height = 160;
+  const ctx = c.getContext('2d')!;
+  const img = ctx.createImageData(160, 160);
+  for (let i = 0; i < img.data.length; i += 4) {
+    const v = 90 + Math.random() * 130;
+    img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
+    img.data[i + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  grainEl.style.backgroundImage = `url(${c.toDataURL()})`;
+}
+// animate the grain by jumping the tile around at ~12fps
+setInterval(() => {
+  if (fx.grain > 0) {
+    grainEl.style.backgroundPosition = `${Math.floor(Math.random() * 160)}px ${Math.floor(Math.random() * 160)}px`;
+  }
+}, 80);
+
+function applyFx(): void {
+  const parts = [FX_PRESETS[fx.preset] ?? ''];
+  if (fx.sat !== 100) parts.push(`saturate(${fx.sat / 100})`);
+  if (fx.con !== 100) parts.push(`contrast(${fx.con / 100})`);
+  if (fx.bri !== 100) parts.push(`brightness(${fx.bri / 100})`);
+  gameEl.style.filter = parts.join(' ').trim();
+  grainEl.style.opacity = String(fx.grain / 100);
+  scanEl.classList.toggle('on', fx.scan);
+  localStorage.setItem('gta2.fx', JSON.stringify(fx));
+}
+
+const fxPreset = $<HTMLSelectElement>('fx-preset');
+const fxGrain = $<HTMLInputElement>('fx-grain');
+const fxScan = $<HTMLInputElement>('fx-scan');
+const fxSat = $<HTMLInputElement>('fx-sat');
+const fxCon = $<HTMLInputElement>('fx-con');
+const fxBri = $<HTMLInputElement>('fx-bri');
+function syncFxPanel(): void {
+  fxPreset.value = fx.preset;
+  fxGrain.value = String(fx.grain);
+  fxScan.checked = fx.scan;
+  fxSat.value = String(fx.sat);
+  fxCon.value = String(fx.con);
+  fxBri.value = String(fx.bri);
+}
+syncFxPanel();
+applyFx();
+$('fx-tab').addEventListener('click', () => $('fx-panel').classList.toggle('open'));
+fxPreset.addEventListener('change', () => { fx.preset = fxPreset.value; applyFx(); });
+fxGrain.addEventListener('input', () => { fx.grain = +fxGrain.value; applyFx(); });
+fxScan.addEventListener('change', () => { fx.scan = fxScan.checked; applyFx(); });
+fxSat.addEventListener('input', () => { fx.sat = +fxSat.value; applyFx(); });
+fxCon.addEventListener('input', () => { fx.con = +fxCon.value; applyFx(); });
+fxBri.addEventListener('input', () => { fx.bri = +fxBri.value; applyFx(); });
+$('fx-reset').addEventListener('click', () => {
+  fx = { ...FX_DEFAULT };
+  syncFxPanel();
+  applyFx();
+});
+
 btnStart.addEventListener('click', closeMenuAndPlay);
 btnControls.addEventListener('click', () => {
   audio.uiClick();

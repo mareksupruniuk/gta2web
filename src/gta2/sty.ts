@@ -58,6 +58,8 @@ export class Sty {
   palBase!: PaletteBase;
   sprites!: SpriteEntry[];
   spriteBase!: { car: number; ped: number; codeObj: number; mapObj: number; user: number; font: number };
+  /** cumulative sprite offsets of each font within the font section (FONB) */
+  fontBases: number[] = [];
   cars!: CarInfo[];
   /** car models eligible for traffic recycling (RECY chunk) */
   recyclableModels: number[] = [];
@@ -226,6 +228,19 @@ export function parseSty(buffer: ArrayBuffer): Sty {
       user: r.u16(),
       font: r.u16(),
     };
+  }
+
+  {
+    const fonb = chunks.get('FONB');
+    if (fonb) {
+      const r = new BinReader(buffer, fonb.offset, fonb.size);
+      const count = r.u16();
+      let acc = 0;
+      for (let i = 0; i < count; i++) {
+        sty.fontBases.push(acc);
+        acc += r.u16();
+      }
+    }
   }
 
   {

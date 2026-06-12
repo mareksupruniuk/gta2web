@@ -62,6 +62,43 @@
       #controls-panel.visible { display: block; }
       #menu .footer { position: absolute; bottom: 16px; color: #444; font-size: 12px; font-family: monospace; }
 
+      /* Film grain + scanlines overlays (world only, under the HUD) */
+      #grain {
+        position: absolute; inset: -64px; pointer-events: none; z-index: 3;
+        opacity: 0; mix-blend-mode: overlay; background-repeat: repeat;
+      }
+      #scanlines {
+        position: absolute; inset: 0; pointer-events: none; z-index: 3;
+        display: none;
+        background: repeating-linear-gradient(
+          0deg, rgba(0,0,0,0.16) 0px, rgba(0,0,0,0.16) 1px,
+          transparent 1px, transparent 3px);
+      }
+      #scanlines.on { display: block; }
+
+      /* In-game FX debug panel */
+      #fx-tab {
+        position: absolute; right: 10px; bottom: 10px; z-index: 8;
+        font-family: monospace; font-size: 12px; letter-spacing: 1px;
+        color: #9ad; background: rgba(8,12,20,0.8); border: 1px solid #345;
+        padding: 4px 10px; cursor: pointer; border-radius: 3px;
+      }
+      #fx-panel {
+        position: absolute; right: 10px; bottom: 42px; z-index: 8;
+        display: none; flex-direction: column; gap: 7px;
+        font-family: monospace; font-size: 12px; color: #cde;
+        background: rgba(8,12,20,0.88); border: 1px solid #345;
+        padding: 12px 14px; border-radius: 4px; min-width: 210px;
+      }
+      #fx-panel.open { display: flex; }
+      #fx-panel .fx-title { color: #9ad; letter-spacing: 2px; margin-bottom: 2px; }
+      #fx-panel label { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+      #fx-panel input[type=range] { width: 110px; }
+      #fx-panel select, #fx-panel button {
+        font-family: inherit; font-size: 12px; background: #1a2433; color: #cde;
+        border: 1px solid #345; border-radius: 3px; padding: 2px 6px; cursor: pointer;
+      }
+
       /* Dusk/dawn colour grading: a multiply layer over the world only */
       #daylight {
         position: absolute; inset: 0; pointer-events: none; z-index: 2;
@@ -157,7 +194,30 @@
   </head>
   <body>
     <div id="game"></div>
+    <div id="grain"></div>
+    <div id="scanlines"></div>
     <div id="daylight"></div>
+    <button id="fx-tab">FX</button>
+    <div id="fx-panel">
+      <div class="fx-title">SCREEN FX</div>
+      <label>preset
+        <select id="fx-preset">
+          <option value="none">none</option>
+          <option value="cinematic" selected>cinematic</option>
+          <option value="vivid">vivid</option>
+          <option value="sepia">sepia</option>
+          <option value="grayscale">grayscale</option>
+          <option value="noir">noir</option>
+          <option value="retro">retro 90s</option>
+        </select>
+      </label>
+      <label>grain <input id="fx-grain" type="range" min="0" max="30" value="8" /></label>
+      <label>scanlines <input id="fx-scan" type="checkbox" /></label>
+      <label>saturation <input id="fx-sat" type="range" min="0" max="200" value="100" /></label>
+      <label>contrast <input id="fx-con" type="range" min="60" max="150" value="100" /></label>
+      <label>brightness <input id="fx-bri" type="range" min="60" max="150" value="100" /></label>
+      <button id="fx-reset">reset</button>
+    </div>
     <div id="hud">
       <span class="score">$<span id="hud-score">0</span></span>
       <div id="gangs"></div>
