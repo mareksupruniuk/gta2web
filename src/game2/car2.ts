@@ -1,31 +1,81 @@
+import { ModelPhysics } from '../gta2/gci';
 import { CarInfo } from '../gta2/sty';
 import { GameEvent, Vec2, vec, wrapAngle } from '../sim/types';
 import { CityMap } from './citymap';
 
 /**
- * Arcade car physics in block units on the real map. Handling tiers come
- * from the style file's quality `rating` (1x=bad, 1y=average, 2y=good).
+ * Car physics in block units on the real map, driven by the original
+ * per-model handling table (nyc.gci / ModelPhysics, docs §7). gci speeds
+ * are tiles/tick @30fps -> ×30 for blocks/s, forces ×900 for blocks/s².
  */
 
 export interface Handling {
-  accel: number;
+  /** blocks/s² per gear (index by current gear 0-2) */
+  accel: [number, number, number];
+  /** gear shift points, blocks/s */
+  gearSpeeds: [number, number];
   maxSpeed: number;
   reverseSpeed: number;
+  brakeDecel: number;
   turnRate: number;
   grip: number;
+  /** lateral speed (blocks/s) where the tires break loose */
+  skidThreshold: number;
+  /** 0..1, how much the handbrake kills lateral grip */
+  handbrakeSlide: number;
+  mass: number;
 }
 
-export function handlingFor(info: CarInfo): Handling {
+const TPS = 30; // gci units are per-tick at 30 fps
+
+/** Per-model handling from nyc.gci, registered at load via setModelPhysics. */
+let modelPhysics: Map<number, ModelPhysics> | null = null;
+
+export function setModelPhysics(map: Map<number, ModelPhysics> | null): void {
+  modelPhysics = map;
+}
+
+function fromPhysics(p: ModelPhysics): Handling {
+  // engine: effective thrust = thrust/2 + thrust/5 (+ turbo boost), per gear
+  const thrust = p.thrust * 0.7 * (p.turbo ? 1.35 : 1);
+  const a = (gear: number) => (thrust * p.gearMult[gear] * TPS * TPS) / p.mass;
+  return {
+    accel: [a(0), a(1), a(2)],
+    gearSpeeds: [p.gear2Speed * TPS, p.gear3Speed * TPS],
+    maxSpeed: p.maxSpeed * TPS,
+    reverseSpeed: Math.max(1.5, p.maxSpeed * TPS * 0.35),
+    brakeDecel: p.brakeFriction * 4.5,
+    turnRate: p.turnIn * 6 + p.turnRatio * 1.5,
+    grip: 6.5 * Math.sqrt(Math.max(0.2, p.rearEndStability)),
+    skidThreshold: p.skidThreshold * TPS,
+    handbrakeSlide: p.handbrakeSlide,
+    mass: p.mass,
+  };
+}
+
+/** Fallback when a model has no gci entry: style-file quality tiers. */
+function fromRating(info: CarInfo): Handling {
   const tier = info.rating >= 21 ? 2 : info.rating >= 11 ? 1 : 0;
   const size = info.h / 64; // length in blocks
   const sizePenalty = Math.max(0, size - 0.9) * 0.8;
+  const accel = [4.0, 5.0, 6.2][tier] - sizePenalty;
   return {
-    accel: [2.6, 3.4, 4.6][tier] - sizePenalty,
-    maxSpeed: [4.2, 5.4, 7.0][tier] - sizePenalty,
-    reverseSpeed: 1.8,
+    accel: [accel * 0.55, accel * 0.68, accel],
+    gearSpeeds: [3.2, 5.4],
+    maxSpeed: [7.0, 9.0, 11.5][tier] - sizePenalty,
+    reverseSpeed: 2.6,
+    brakeDecel: 8,
     turnRate: [2.4, 2.9, 3.4][tier] - sizePenalty * 0.5,
-    grip: 9,
+    grip: 8,
+    skidThreshold: 2.6,
+    handbrakeSlide: 0.45,
+    mass: 14,
   };
+}
+
+export function handlingFor(info: CarInfo): Handling {
+  const p = modelPhysics?.get(info.model);
+  return p ? fromPhysics(p) : fromRating(info);
 }
 
 export interface CarControls {
@@ -50,6 +100,8 @@ export class Car2 {
   driver: 'player' | 'ai' | null = null;
   controls: CarControls = { throttle: 0, steer: 0, handbrake: false };
   exploded = false;
+  /** sliding beyond the skid threshold this frame (drives skid-mark decals) */
+  skidding = false;
   /** GTA2: a badly damaged car catches fire and burns before exploding. */
   onFire = false;
   private burnTime = 0;
@@ -145,27 +197,38 @@ export class Car2 {
     let lat = -this.vel.x * sin + this.vel.y * cos;
 
     const { throttle, steer, handbrake } = this.controls;
+    // gear by forward speed (gci shift points)
+    const gear = Math.abs(fwd) >= h.gearSpeeds[1] ? 2 : Math.abs(fwd) >= h.gearSpeeds[0] ? 1 : 0;
     if (this.driver) {
-      if (throttle > 0) fwd += throttle * h.accel * dt;
+      if (throttle > 0) fwd += throttle * h.accel[gear] * dt;
       else if (throttle < 0) {
-        if (fwd > 0.15) fwd += throttle * h.accel * 2.2 * dt; // braking
-        else fwd += throttle * h.accel * 0.6 * dt; // reversing
+        if (fwd > 0.15) fwd -= h.brakeDecel * -throttle * dt; // braking
+        else fwd += throttle * h.accel[0] * 0.8 * dt; // reversing
       }
+      if (handbrake && fwd > 0.1) fwd = Math.max(0, fwd - 2.5 * dt);
     }
     const drag = this.driver && throttle !== 0 ? 0.25 : 1.4;
     fwd -= fwd * drag * dt;
     if (Math.abs(fwd) < 0.02 && throttle === 0) fwd = 0;
     fwd = Math.min(h.maxSpeed, Math.max(-h.reverseSpeed, fwd));
 
-    const grip = handbrake ? h.grip * 0.22 : h.grip;
+    // Lateral grip: full below the model's skid threshold, sharply reduced
+    // beyond it (tires broken loose); handbrake kills it by handbrakeSlide.
+    let grip = h.grip;
+    if (Math.abs(lat) > h.skidThreshold) grip *= 0.45;
+    if (handbrake) grip *= Math.max(0.08, 1 - h.handbrakeSlide * 1.7);
     lat -= lat * Math.min(1, grip * dt);
 
-    // Tires squeal when sliding sideways or handbraking at speed.
-    if (this.driver && Math.abs(lat) > 0.9 && Math.abs(fwd) > 1.2) {
+    // Tires squeal when sliding beyond the skid threshold at speed.
+    this.skidding =
+      !!this.driver && Math.abs(lat) > Math.max(0.7, h.skidThreshold * 0.8) && this.speed() > 1.2;
+    if (this.skidding) {
       emit({ type: 'skid', pos: { ...this.pos }, intensity: Math.min(1, Math.abs(lat) / 3) });
     }
 
-    const speedFactor = Math.min(1, Math.abs(fwd) / 1.2);
+    // Steering: builds up with speed, loses authority at very high speed.
+    const speedFactor =
+      Math.min(1, Math.abs(fwd) / 1.5) / (1 + Math.max(0, Math.abs(fwd) - 6) * 0.05);
     const dir = fwd >= 0 ? 1 : -1;
     this.heading = wrapAngle(this.heading + steer * h.turnRate * speedFactor * dir * dt);
 

@@ -1,9 +1,11 @@
 import { AudioManager } from './audio/audio';
 import { Gta2Bank } from './audio/gta2bank';
 import { Input } from './core/input';
+import { setModelPhysics } from './game2/car2';
 import { CityMap } from './game2/citymap';
 import { Cop } from './game2/police';
 import { Pickup, PlayerInput, World2 } from './game2/world2';
+import { parseGci } from './gta2/gci';
 import { parseGmp } from './gta2/gmp';
 import { parseSty, Sty } from './gta2/sty';
 import { CityRenderer, FxSpawn, RenderEntity, TracerKind } from './render3d/renderer3d';
@@ -123,7 +125,7 @@ async function startGame(): Promise<void> {
   try {
     // ?map=ste / ?map=bil loads the other districts (default: Downtown).
     const district = new URLSearchParams(location.search).get('map') ?? 'wil';
-    const [gmpBuf, styBuf] = await Promise.all([
+    const [gmpBuf, styBuf, gciText] = await Promise.all([
       fetch(`gamedata/${district}.gmp`).then((r) => {
         if (!r.ok) throw new Error(`${district}.gmp missing — put GTA2 data files in gamedata/`);
         return r.arrayBuffer();
@@ -132,8 +134,11 @@ async function startGame(): Promise<void> {
         if (!r.ok) throw new Error(`${district}.sty missing — put GTA2 data files in gamedata/`);
         return r.arrayBuffer();
       }),
+      // Original per-model handling table; optional (tier fallback without it).
+      fetch('gamedata/nyc.gci').then((r) => (r.ok ? r.text() : null)).catch(() => null),
     ]);
     sty = parseSty(styBuf);
+    setModelPhysics(gciText ? parseGci(gciText) : null);
     PED_SPRITE_BASE = sty.spriteBase.car;
     OBJ_SPRITE_BASE = sty.spriteBase.car + sty.spriteBase.ped;
     const map = new CityMap(parseGmp(gmpBuf));

@@ -546,28 +546,32 @@ export class World2 {
           }
         }
         if (overlap <= 0) continue;
-        a.pos.x -= (nx * overlap) / 2;
-        a.pos.y -= (ny * overlap) / 2;
-        b.pos.x += (nx * overlap) / 2;
-        b.pos.y += (ny * overlap) / 2;
+        // Mass-weighted response (gci): the heavier car shunts the lighter.
+        const ma = a.handling.mass;
+        const mb = b.handling.mass;
+        const aShare = mb / (ma + mb);
+        a.pos.x -= nx * overlap * aShare;
+        a.pos.y -= ny * overlap * aShare;
+        b.pos.x += nx * overlap * (1 - aShare);
+        b.pos.y += ny * overlap * (1 - aShare);
         const relSpeed = Math.hypot(a.vel.x - b.vel.x, a.vel.y - b.vel.y);
         if (relSpeed > 1.2) {
           const dmg = relSpeed * 3;
-          a.applyDamage(dmg, this.emit);
-          b.applyDamage(dmg, this.emit);
+          a.applyDamage(dmg * 2 * aShare, this.emit);
+          b.applyDamage(dmg * 2 * (1 - aShare), this.emit);
           this.emit({
             type: 'car_crash',
             pos: { x: (a.pos.x + b.pos.x) / 2, y: (a.pos.y + b.pos.y) / 2 },
             speed: relSpeed,
           });
         }
-        const push = 0.3;
+        const push = 0.6;
         const avx = a.vel.x;
         const avy = a.vel.y;
-        a.vel.x += (b.vel.x - avx) * push;
-        a.vel.y += (b.vel.y - avy) * push;
-        b.vel.x += (avx - b.vel.x) * push;
-        b.vel.y += (avy - b.vel.y) * push;
+        a.vel.x += (b.vel.x - avx) * push * aShare;
+        a.vel.y += (b.vel.y - avy) * push * aShare;
+        b.vel.x += (avx - b.vel.x) * push * (1 - aShare);
+        b.vel.y += (avy - b.vel.y) * push * (1 - aShare);
       }
     }
   }

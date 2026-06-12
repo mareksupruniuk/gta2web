@@ -123,7 +123,7 @@ export class PursuitAI {
   constructor(car: Car2, dir: ConstructorParameters<typeof TrafficAI>[1]) {
     this.car = car;
     this.lane = new TrafficAI(car, dir);
-    this.lane.cruise = 3.0; // sirens on, foot down
+    this.lane.cruise = 9.0; // sirens on, foot down (cop car tops out ~12.4)
     car.driver = 'ai';
   }
 
