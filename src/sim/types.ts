@@ -100,4 +100,8 @@ export type GameEvent =
   | { type: 'pickup'; pos: Vec2; kind?: string }
   | { type: 'player_died'; pos: Vec2 }
   /** player earned points — drives the big green world-space popups */
-  | { type: 'score'; pos: Vec2; amount: number; label?: string };
+  | { type: 'score'; pos: Vec2; amount: number; label?: string }
+  | { type: 'mission_start'; pos: Vec2; text: string }
+  | { type: 'mission_complete'; pos: Vec2 }
+  | { type: 'mission_failed'; pos: Vec2 }
+  | { type: 'phone_ring'; pos: Vec2 };

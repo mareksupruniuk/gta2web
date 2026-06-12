@@ -279,6 +279,37 @@ export class AudioManager {
     this.vocalBusyUntil = ctx.currentTime + buf.duration;
   }
 
+  /** Classic double-chirp payphone ring (synth). */
+  playPhoneRing(): void {
+    if (!this.ready() || !this.enabled) return;
+    const ctx = this.ctx!;
+    const t0 = ctx.currentTime;
+    for (let burst = 0; burst < 2; burst++) {
+      const start = t0 + burst * 0.22;
+      const osc = ctx.createOscillator();
+      osc.type = 'square';
+      osc.frequency.value = 1180;
+      const trill = ctx.createOscillator();
+      trill.type = 'square';
+      trill.frequency.value = 22; // bell trill
+      const trillGain = ctx.createGain();
+      trillGain.gain.value = 320;
+      trill.connect(trillGain);
+      trillGain.connect(osc.frequency);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0, start);
+      g.gain.linearRampToValueAtTime(0.07, start + 0.01);
+      g.gain.setValueAtTime(0.07, start + 0.13);
+      g.gain.linearRampToValueAtTime(0, start + 0.16);
+      osc.connect(g);
+      g.connect(this.master!);
+      osc.start(start);
+      trill.start(start);
+      osc.stop(start + 0.18);
+      trill.stop(start + 0.18);
+    }
+  }
+
   /** Play positional sounds for sim events, attenuated by listener distance. */
   handleEvents(events: GameEvent[], listenerPos: Vec2): void {
     if (!this.ready() || !this.enabled) return;

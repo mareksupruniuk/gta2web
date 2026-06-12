@@ -110,6 +110,9 @@ export class CityRenderer {
   }[] = [];
   private leadX = 0;
   private leadY = 0;
+  /** pulsing world markers (phones, mission objective) */
+  private markers = new Map<string, THREE.Mesh>();
+  private markerTime = 0;
 
   private constructor(mount: HTMLElement, sty: Sty) {
     this.sty = sty;
@@ -279,6 +282,35 @@ export class CityRenderer {
     }
   }
 
+  /**
+   * Pulsing ground markers (ringing phones, mission objective). Diffed by
+   * key like entities; kind picks the colour (phone cyan, objective yellow).
+   */
+  syncMarkers(markers: { key: string; x: number; y: number; z: number; kind: 'phone' | 'objective' }[]): void {
+    const seen = new Set<string>();
+    for (const mk of markers) {
+      seen.add(mk.key);
+      let mesh = this.markers.get(mk.key);
+      if (!mesh) {
+        const tex = this.effectTexture(mk.kind === 'phone' ? 'marker-phone' : 'marker-objective');
+        const geo = new THREE.PlaneGeometry(0.8, 0.8);
+        const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false });
+        mesh = new THREE.Mesh(geo, mat);
+        mesh.renderOrder = 4;
+        this.scene.add(mesh);
+        this.markers.set(mk.key, mesh);
+      }
+      mesh.position.set(mk.x, -mk.y, mk.z + 0.04);
+    }
+    for (const [key, mesh] of this.markers) {
+      if (!seen.has(key)) {
+        this.scene.remove(mesh);
+        disposeMesh(mesh);
+        this.markers.delete(key);
+      }
+    }
+  }
+
   /** Persistent fading tire-mark decal at a wheel position. */
   addSkidMark(x: number, y: number, z: number, angle: number): void {
     if (!this.markGeo) this.markGeo = new THREE.PlaneGeometry(0.055, 0.16);
@@ -361,6 +393,22 @@ export class CityRenderer {
         grad.addColorStop(0.4, 'rgba(120,180,255,0.95)');
         grad.addColorStop(1, 'rgba(60,90,255,0)');
         break;
+      case 'marker-phone':
+      case 'marker-objective': {
+        const col = kind === 'marker-phone' ? '90,220,255' : '255,215,40';
+        ctx.strokeStyle = `rgba(${col},0.95)`;
+        ctx.lineWidth = 5;
+        ctx.beginPath();
+        ctx.arc(32, 32, 24, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = `rgba(${col},0.30)`;
+        ctx.beginPath();
+        ctx.arc(32, 32, 20, 0, Math.PI * 2);
+        ctx.fill();
+        tex = new THREE.CanvasTexture(c);
+        this.fxTex.set(kind, tex);
+        return tex;
+      }
       case 'debris': {
         // burning fragment with a trailing tail (drawn along canvas y)
         const lin = ctx.createLinearGradient(0, 0, 0, 64);
@@ -653,6 +701,9 @@ export class CityRenderer {
   /** Per-frame: advance effects and position the chase camera. */
   update(dt: number, focus: { x: number; y: number; z: number; speed: number; driving: boolean; vx?: number; vy?: number }): void {
     this.updateTileAnims(dt);
+    this.markerTime += dt;
+    const pulse = 1 + Math.sin(this.markerTime * 5) * 0.18;
+    for (const mesh of this.markers.values()) mesh.scale.set(pulse, pulse, 1);
     // Tire marks persist, then fade away over their last 4 seconds.
     this.marks = this.marks.filter((m) => {
       m.ttl -= dt;

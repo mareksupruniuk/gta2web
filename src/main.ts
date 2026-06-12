@@ -85,7 +85,16 @@ const PICKUP_FRAMES = 8;
 
 const hudRightEl = $('hud-right');
 const zoneEl = $('zone');
+const mtextEl = $('mtext');
+const arrowEl = $('arrow');
 let zoneTimer = 0;
+let mtextTimer = 0;
+
+function showMissionText(text: string, seconds = 9): void {
+  mtextEl.textContent = text;
+  mtextEl.style.opacity = '1';
+  mtextTimer = seconds;
+}
 
 function showZone(name: string): void {
   zoneEl.textContent = name;
@@ -432,6 +441,18 @@ function tick(now: number): void {
       } else if (e.type === 'busted') {
         showMsg('BUSTED', 3);
         audio.playVocal('busted', { priority: true });
+      } else if (e.type === 'mission_start') {
+        showMissionText(e.text);
+      } else if (e.type === 'mission_complete') {
+        showMsg('JOB COMPLETE!', 3);
+        audio.playVocal('jobcomplete', { priority: true });
+        mtextEl.style.opacity = '0';
+      } else if (e.type === 'mission_failed') {
+        showMsg('JOB FAILED', 3);
+        audio.playVocal('jobfail', { priority: true });
+        mtextEl.style.opacity = '0';
+      } else if (e.type === 'phone_ring') {
+        audio.playPhoneRing();
       } else if (e.type === 'car_enter' && e.jacked) {
         audio.playVocal(Math.random() < 0.5 ? 'carjacker' : 'gta');
       } else if (e.type === 'pickup' && e.kind) {
@@ -565,6 +586,10 @@ function tick(now: number): void {
     zoneTimer -= dt;
     if (zoneTimer <= 0) zoneEl.style.opacity = '0';
   }
+  if (mtextTimer > 0) {
+    mtextTimer -= dt;
+    if (mtextTimer <= 0) mtextEl.style.opacity = '0';
+  }
 
   renderer.syncEntities(entities(world));
   renderer.syncTracers([
@@ -581,6 +606,32 @@ function tick(now: number): void {
       x: f.pos.x, y: f.pos.y, z: f.z, angle: 0, age: f.age,
     })),
   ]);
+  // mission markers: idle phones ring cyan, the active objective is yellow
+  const markers: { key: string; x: number; y: number; z: number; kind: 'phone' | 'objective' }[] = [];
+  world.missions.phones.forEach((ph, i) => {
+    if (!world!.missions.active && ph.cooldown === 0) {
+      markers.push({ key: `phone:${i}`, x: ph.pos.x, y: ph.pos.y, z: ph.z, kind: 'phone' });
+    }
+  });
+  const mission = world.missions.active;
+  if (mission) {
+    const tz = world.map.groundZ(mission.target.x, mission.target.y, world.player.z + 2) ?? world.player.z;
+    markers.push({ key: 'objective', x: mission.target.x, y: mission.target.y, z: tz, kind: 'objective' });
+  }
+  renderer.syncMarkers(markers);
+  // GTA2-style arrow orbiting the player toward the objective
+  if (mission && !paused) {
+    const dxm = mission.target.x - world.player.pos.x;
+    const dym = mission.target.y - world.player.pos.y;
+    const am = Math.atan2(dym, dxm);
+    const r = 70; // px from screen centre
+    arrowEl.style.display = 'block';
+    arrowEl.style.transform =
+      `translate(${Math.cos(am) * r - 13}px, ${Math.sin(am) * r - 16}px) rotate(${(am * 180) / Math.PI + 90}deg)`;
+  } else {
+    arrowEl.style.display = 'none';
+  }
+
   const p = world.player;
   renderer.update(dt, {
     x: p.pos.x, y: p.pos.y, z: p.z,

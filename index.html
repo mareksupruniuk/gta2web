@@ -103,6 +103,22 @@
         z-index: 5; pointer-events: none;
         opacity: 0; transition: opacity 0.3s;
       }
+      /* Mission text bar, like the original's bottom dialogue */
+      #mtext {
+        position: absolute; bottom: 14px; left: 0; right: 0; text-align: center;
+        color: #9fd7ff; font-family: 'Arial Black', Arial, sans-serif;
+        font-size: 17px; letter-spacing: 1px;
+        text-shadow: 2px 2px 0 #06283d, -1px -1px 0 #06283d;
+        z-index: 5; pointer-events: none; padding: 0 60px;
+        opacity: 0; transition: opacity 0.3s;
+      }
+      /* Objective arrow circling the player, GTA2 style */
+      #arrow {
+        position: absolute; left: 50%; top: 50%;
+        color: #ffd700; font-size: 26px; text-shadow: 0 0 6px #000;
+        z-index: 5; pointer-events: none; display: none;
+        transform-origin: center;
+      }
       /* Yellow district plaque, like the original zone-name bar */
       #zone {
         position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
@@ -128,6 +144,8 @@
     </div>
     <div id="zone"></div>
     <div id="msg"></div>
+    <div id="mtext"></div>
+    <div id="arrow">&#9650;</div>
     <div id="menu">
       <h1>GTA2WEB</h1>
       <h2 id="menu-subtitle">DOWNTOWN DISTRICT</h2>

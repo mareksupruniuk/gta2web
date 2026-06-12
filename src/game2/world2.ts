@@ -5,6 +5,7 @@ import { Car2 } from './car2';
 import { CityMap } from './citymap';
 import { panicNearby, Ped2, PED_RADIUS } from './ped2';
 import { GangId, GangMember, gangTurfs, GangTurf, turfAt } from './gangs';
+import { MissionManager } from './missions';
 import { Cop, COP_CAR_MODEL, policeCarModel, PursuitAI } from './police';
 import { TrafficAI, dirAngle, dirNameFromArrows } from './traffic2';
 import { Bullet, Flame, Inventory, Thrown, WEAPONS } from './weapons2';
@@ -145,6 +146,11 @@ export class World2 {
   turfs: GangTurf[] = [];
   /** gangs the player has provoked (kill a member -> hostile) */
   gangHostile = new Set<GangId>();
+  /** phone missions */
+  missions = new MissionManager();
+  /** entity ids exempt from distance despawn (mission targets) */
+  private protectedPeds = new Set<number>();
+  private protectedCars = new Set<number>();
 
   constructor(map: CityMap, sty: Sty, seed = 1999, spawn?: { x: number; y: number }) {
     this.map = map;
@@ -173,6 +179,7 @@ export class World2 {
     this.turfs = gangTurfs(map.gmp.zones);
 
     this.placePickups();
+    this.missions.init(this);
     for (let i = 0; i < PED_TARGET; i++) this.spawnPed(true);
     for (let i = 0; i < CAR_TARGET; i++) this.spawnTrafficCar(true);
     this.spawnParkedCarNearPlayer();
@@ -192,6 +199,49 @@ export class World2 {
   private award(amount: number, pos: Vec2, label?: string): void {
     this.player.score += amount;
     this.emit({ type: 'score', pos: { ...pos }, amount, label });
+  }
+
+  /** Mission-system access: pavement spawn spots. */
+  pavementSpots(): { x: number; y: number; z: number }[] {
+    return this.pavementSpawns;
+  }
+
+  /** A spawn spot between min and max blocks from the player. */
+  spotAwayFromPlayer(min: number, max: number, kind: 'road' | 'pavement'): { x: number; y: number; z: number } | null {
+    const pool = (kind === 'road' ? this.roadSpawns : this.pavementSpawns).filter((s) => {
+      const d = dist(s, this.player.pos);
+      return d >= min && d <= max;
+    });
+    return pool.length > 0 ? this.rng.pick(pool) : null;
+  }
+
+  /** Spawn a parked despawn-protected car for a mission objective. */
+  spawnMissionCar(min: number, max: number): Car2 | null {
+    const s = this.spotAwayFromPlayer(min, max, 'road');
+    if (!s) return null;
+    if (this.cars.some((c) => dist(c.pos, s) < 1.5)) return null;
+    const info = this.usableCars.find((c) => c.rating >= 11) ?? this.usableCars[0];
+    const remap = info.remaps.length > 0 ? this.rng.pick(info.remaps) : -1;
+    const dir = dirNameFromArrows(this.map.arrowsAt(s.x, s.y, s.z), this.rng);
+    const car = new Car2(info, remap, { x: s.x, y: s.y }, s.z, dir ? dirAngle(dir) : 0);
+    this.cars.push(car);
+    this.protectedCars.add(car.id);
+    return car;
+  }
+
+  /** Exempt a mission ped from distance despawn. */
+  protect(ped: Ped2): void {
+    this.protectedPeds.add(ped.id);
+  }
+
+  /** External event injection (mission system). */
+  emitEvent(e: GameEvent): void {
+    this.emit(e);
+  }
+
+  /** Mission payout: cash + popup. */
+  awardMission(reward: number, pos: Vec2): void {
+    this.award(reward, pos);
   }
 
   /** Points + heat for a ped the player killed. */
@@ -337,6 +387,7 @@ export class World2 {
       }
     }
     this.maintainPolice(dt);
+    this.missions.update(dt, this);
     this.runOverChecks();
     this.updateBullets(dt);
     this.updateThrown(dt);
@@ -1019,7 +1070,7 @@ export class World2 {
     }
     this.peds = this.peds.filter((p) => {
       if (p.dead && (this.corpseTimers.get(p.id) ?? 1) <= 0) return false;
-      if (!p.dead && dist(p.pos, this.player.pos) > DESPAWN) return false;
+      if (!p.dead && !this.protectedPeds.has(p.id) && dist(p.pos, this.player.pos) > DESPAWN) return false;
       return true;
     });
 
@@ -1028,8 +1079,8 @@ export class World2 {
       this.wreckTimers.set(car.id, (this.wreckTimers.get(car.id) ?? WRECK_TTL) - dt);
     }
     this.cars = this.cars.filter((c) => {
-      if (c.exploded) return (this.wreckTimers.get(c.id) ?? 1) > 0;
-      if (c.driver === 'ai' && dist(c.pos, this.player.pos) > DESPAWN) return false;
+      if (c.exploded) return this.protectedCars.has(c.id) || (this.wreckTimers.get(c.id) ?? 1) > 0;
+      if (c.driver === 'ai' && !this.protectedCars.has(c.id) && dist(c.pos, this.player.pos) > DESPAWN) return false;
       return true;
     });
     this.drivers = this.drivers.filter((d) => !d.car.exploded && this.cars.includes(d.car));

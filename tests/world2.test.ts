@@ -400,3 +400,46 @@ describe.skipIf(!haveData)('gangs on Downtown', () => {
     }
   });
 });
+
+describe.skipIf(!haveData)('phone missions on Downtown', () => {
+  const map = haveData ? new CityMap(parseGmp(load('wil.gmp'))) : (null as unknown as CityMap);
+  const sty = haveData ? parseSty(load('wil.sty')) : (null as unknown as ReturnType<typeof parseSty>);
+
+  it('phones exist per gang; answering starts a job; finishing it pays out', () => {
+    const world = new World2(map, sty, 1234);
+    expect(world.missions.phones.length).toBeGreaterThanOrEqual(2);
+
+    // walk onto a phone
+    const phone = world.missions.phones[0];
+    world.player.pos = { x: phone.pos.x, y: phone.pos.y };
+    world.player.z = phone.z;
+    // spot selection can fail on a given tick; the phone retries while idle
+    for (let i = 0; i < 120 && !world.missions.active; i++) {
+      world.player.pos = { x: phone.pos.x, y: phone.pos.y };
+      world.update(1 / 60, NEUTRAL);
+    }
+    const mission = world.missions.active;
+    expect(mission).not.toBeNull();
+    expect(world.drainEvents().some((e) => e.type === 'mission_start')).toBe(true);
+
+    // complete it by force
+    const score0 = world.player.score;
+    if (mission!.kind === 'hit') mission!.targetPed!.applyDamage(1000, () => undefined);
+    else if (mission!.kind === 'wreck') mission!.targetCar!.applyDamage(1000, () => undefined, true);
+    else {
+      // deliver: teleport the car (with player driving) to the dropoff
+      const car = mission!.targetCar!;
+      world.drivers = world.drivers.filter((d) => d.car !== car);
+      car.driver = 'player';
+      world.player.car = car;
+      car.pos = { ...mission!.deliverTo! };
+      car.z = map.groundZ(car.pos.x, car.pos.y, 8) ?? car.z;
+    }
+    for (let i = 0; i < 10 && world.missions.active; i++) world.update(1 / 60, NEUTRAL);
+    expect(world.missions.active).toBeNull();
+    expect(world.drainEvents().some((e) => e.type === 'mission_complete')).toBe(true);
+    expect(world.player.score).toBeGreaterThan(score0);
+    // the phone goes on cooldown
+    expect(phone.cooldown).toBeGreaterThan(0);
+  });
+});
