@@ -105,8 +105,8 @@
         mix-blend-mode: multiply; background: transparent;
         transition: background 1.5s;
       }
-      #daylight.dusk { background: #c8856a; }
-      #daylight.dawn { background: #e7bb9b; }
+      #daylight.dusk { background: #97a2c4; }
+      #daylight.dawn { background: #d9bfae; }
 
       /* GTA2-style HUD: money LCD top-left, hearts + weapon + cops top-right */
       #hud {
@@ -132,10 +132,10 @@
       #gangs .stance.neutral { color: #aaa; }
       #gangs .stance.allied { color: #5aff5a; }
       #hud .score {
-        color: #6f6; font-family: 'Courier New', monospace; font-weight: bold;
-        font-size: 24px; background: rgba(0,24,0,0.72);
-        border: 2px solid #2a4; border-radius: 4px; padding: 1px 10px;
-        text-shadow: 0 0 6px #4f4;
+        display: inline-block; line-height: 0;
+        background: linear-gradient(#3c3f46, #24262c 55%, #303239);
+        border: 1px solid #15161a; border-radius: 6px; padding: 6px 12px 5px;
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.18), 0 2px 6px rgba(0,0,0,0.6);
       }
       #hud-right {
         position: absolute; top: 12px; right: 16px; text-align: right;
@@ -156,6 +156,7 @@
       }
       #msg {
         position: absolute; top: 22%; left: 0; right: 0; text-align: center;
+        display: flex; justify-content: center; align-items: center;
         color: #ffd700; font-family: 'Arial Black', Arial, sans-serif;
         font-size: 42px; font-style: italic; letter-spacing: 2px;
         text-shadow: 3px 3px 0 #8c0e0e, -2px -2px 0 #8c0e0e, 2px -2px 0 #8c0e0e,
@@ -179,15 +180,14 @@
         z-index: 5; pointer-events: none; display: none;
         transform-origin: center;
       }
-      /* Yellow district plaque, like the original zone-name bar */
+      /* District plaque: dark engraved stone bar with the original font */
       #zone {
-        position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
-        background: linear-gradient(#e8d75a, #c9b53a);
-        color: #1c1808; font-family: 'Arial Black', Arial, sans-serif;
-        font-size: 15px; letter-spacing: 3px; padding: 3px 26px;
-        border: 1px solid #8a7a20; border-radius: 2px;
-        box-shadow: 0 2px 6px rgba(0,0,0,0.6);
-        z-index: 5; pointer-events: none;
+        position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
+        background: linear-gradient(#3c3f46, #24262c 55%, #303239);
+        padding: 5px 30px 3px; border-radius: 12px;
+        border: 1px solid #15161a;
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.18), 0 2px 8px rgba(0,0,0,0.7);
+        z-index: 5; pointer-events: none; line-height: 0;
         opacity: 0; transition: opacity 0.4s;
       }
     </style>
@@ -219,7 +219,7 @@
       <button id="fx-reset">reset</button>
     </div>
     <div id="hud">
-      <span class="score">$<span id="hud-score">0</span></span>
+      <span class="score"><span id="hud-score">$0</span></span>
       <div id="gangs"></div>
     </div>
     <div id="hud-right">

@@ -49,6 +49,92 @@ let playerAttacking = false;
 let PED_SPRITE_BASE = 0;
 let OBJ_SPRITE_BASE = 0;
 let MAPOBJ_SPRITE_BASE = 0;
+let FONT_SPRITE_BASE = 0;
+
+// Original style-file fonts (FONB): glyph order observed in the font dump.
+const FONT_HEADLINE = 0; // big orange caps: BUSTED, KILL FRENZY, ...
+const FONT_PLAQUE = 6; // white caps: zone-name bar, money
+// glyph order is contiguous ASCII from '!' (verified: glyph 23 = '8')
+const MAP_ASCII = `!"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ`;
+const MAP_HEADLINE = MAP_ASCII;
+const MAP_PLAQUE = MAP_ASCII;
+const styTextCache = new Map<string, HTMLCanvasElement>();
+
+/** Render text with one of the original STY fonts onto a canvas. */
+function styText(font: number, map: string, text: string, scale = 1): HTMLCanvasElement | null {
+  if (!sty || sty.fontBases.length <= font) return null;
+  const key = `${font}:${scale}:${text}`;
+  const hit = styTextCache.get(key);
+  if (hit) return copyCanvas(hit);
+  const base = FONT_SPRITE_BASE + sty.fontBases[font];
+  const glyphs: ({ w: number; h: number; data: Uint8Array } | null)[] = [];
+  let width = 0;
+  let height = 0;
+  let avgW = 0;
+  let n = 0;
+  for (const ch of text.toUpperCase()) {
+    if (ch === ' ') {
+      glyphs.push(null);
+      continue;
+    }
+    const idx = map.indexOf(ch);
+    if (idx < 0) {
+      glyphs.push(null);
+      continue;
+    }
+    const g = sty.spriteRGBA(base + idx);
+    glyphs.push(g);
+    width += g.w + 1;
+    height = Math.max(height, g.h);
+    avgW += g.w;
+    n++;
+  }
+  if (n === 0) return null;
+  avgW /= n;
+  width += glyphs.filter((g) => g === null).length * Math.round(avgW * 0.6);
+  const c = document.createElement('canvas');
+  c.width = Math.ceil(width * scale);
+  c.height = Math.ceil(height * scale);
+  const ctx = c.getContext('2d')!;
+  ctx.imageSmoothingEnabled = scale % 1 !== 0;
+  let x = 0;
+  for (const g of glyphs) {
+    if (!g) {
+      x += avgW * 0.6;
+      continue;
+    }
+    const oc = document.createElement('canvas');
+    oc.width = g.w;
+    oc.height = g.h;
+    oc.getContext('2d')!.putImageData(new ImageData(new Uint8ClampedArray(g.data), g.w, g.h), 0, 0);
+    ctx.drawImage(oc, x * scale, (height - g.h) * scale, g.w * scale, g.h * scale);
+    x += g.w + 1;
+  }
+  if (styTextCache.size > 80) styTextCache.clear();
+  styTextCache.set(key, c);
+  return copyCanvas(c);
+}
+
+/** cloneNode() does not copy a canvas bitmap — draw a real copy. */
+function copyCanvas(src: HTMLCanvasElement): HTMLCanvasElement {
+  const c = document.createElement('canvas');
+  c.width = src.width;
+  c.height = src.height;
+  c.getContext('2d')!.drawImage(src, 0, 0);
+  return c;
+}
+
+/** Put STY-font text into an element (fallback: plain text). */
+function setStyText(el: HTMLElement, font: number, map: string, text: string, scale: number): void {
+  const c = font >= 0 ? styText(font, map, text, scale) : null;
+  el.innerHTML = '';
+  if (c) {
+    c.style.imageRendering = 'pixelated';
+    el.appendChild(c);
+  } else {
+    el.textContent = text;
+  }
+}
 // Original art: GTA2 objective arrow (codeObj 1), phone box (mapObj 58).
 const ARROW_CODEOBJ = 1;
 const PHONE_MAPOBJ = 58;
@@ -101,13 +187,20 @@ function showMissionText(text: string, seconds = 9): void {
 }
 
 function showZone(name: string): void {
-  zoneEl.textContent = name;
+  setStyText(zoneEl, FONT_PLAQUE, MAP_PLAQUE, name, 0.55);
   zoneEl.style.opacity = '1';
   zoneTimer = 3;
 }
 
 function showMsg(text: string, seconds = 2.5): void {
-  msgEl.textContent = text;
+  const up = text.toUpperCase();
+  const headline =
+    up.length <= 20 && [...up].every((ch) => ch === ' ' || MAP_HEADLINE.includes(ch));
+  if (headline) setStyText(msgEl, FONT_HEADLINE, MAP_HEADLINE, up, 1);
+  else {
+    msgEl.innerHTML = '';
+    msgEl.textContent = text;
+  }
   msgEl.style.opacity = '1';
   msgTimer = seconds;
 }
@@ -118,7 +211,11 @@ function updateHud(w: World2): void {
   $('hud-weapon').textContent = w.player.car ? 'DRIVING' : w.player.inventory.currentDef().name;
   const ammo = w.player.inventory.currentAmmo();
   $('hud-ammo').textContent = !w.player.car && Number.isFinite(ammo) ? `× ${ammo}` : '';
-  $('hud-score').textContent = String(w.player.score);
+  const scoreEl = $('hud-score');
+  if (scoreEl.dataset.v !== String(w.player.score)) {
+    scoreEl.dataset.v = String(w.player.score);
+    setStyText(scoreEl, FONT_PLAQUE, MAP_PLAQUE, `$${w.player.score}`, 0.45);
+  }
   // gang attitudes (respect): name + stance, GTA2-style
   const gangsEl = $('gangs');
   const seen = new Set<string>();
@@ -195,6 +292,8 @@ async function startGame(): Promise<void> {
     PED_SPRITE_BASE = sty.spriteBase.car;
     OBJ_SPRITE_BASE = sty.spriteBase.car + sty.spriteBase.ped;
     MAPOBJ_SPRITE_BASE = OBJ_SPRITE_BASE + sty.spriteBase.codeObj;
+    FONT_SPRITE_BASE = MAPOBJ_SPRITE_BASE + sty.spriteBase.mapObj + sty.spriteBase.user;
+    styTextCache.clear();
     const map = new CityMap(parseGmp(gmpBuf));
     // Spawn outside the Jesus Saves church in Avalon (north-west Downtown).
     world = new World2(map, sty, 1999, district === 'wil' ? { x: 9.5, y: 14.5 } : undefined);
@@ -277,6 +376,7 @@ function entities(w: World2): RenderEntity[] {
       x: car.pos.x, y: car.pos.y, z: car.z + 0.05,
       angle: car.heading,
       shadow: !car.exploded,
+      headlights: timeMode !== 'day' && !car.exploded,
       ...gradAt(w, car.pos.x, car.pos.y, car.z),
     });
   }
@@ -763,23 +863,6 @@ for (const btn of document.querySelectorAll<HTMLButtonElement>('#districts butto
   });
 }
 
-// Day / dusk / dawn colour grading, persisted across sessions.
-const TIMES = ['day', 'dusk', 'dawn'] as const;
-const daylightEl = $('daylight');
-const btnTime = $<HTMLButtonElement>('btn-time');
-let timeMode = (localStorage.getItem('gta2.time') ?? 'dusk') as (typeof TIMES)[number];
-function applyTimeMode(): void {
-  daylightEl.className = timeMode === 'day' ? '' : timeMode;
-  btnTime.textContent = `TIME: ${timeMode.toUpperCase()}`;
-}
-applyTimeMode();
-btnTime.addEventListener('click', () => {
-  timeMode = TIMES[(TIMES.indexOf(timeMode) + 1) % TIMES.length];
-  localStorage.setItem('gta2.time', timeMode);
-  applyTimeMode();
-  audio.uiClick();
-});
-
 // ---------------------------------------------------------------- screen FX
 // CSS-filter colour grading on the world canvas + generated film grain +
 // scanlines, controlled from the in-game FX panel (persisted).
@@ -800,6 +883,14 @@ const FX_PRESETS: Record<string, string> = {
   noir: 'grayscale(1) contrast(1.4) brightness(0.92)',
   retro: 'sepia(0.25) saturate(1.2) contrast(1.12)',
 };
+// the original's dusk: dark, cool, desaturated, lights carry the scene
+const TIME_FILTER: Record<string, string> = {
+  day: '',
+  dusk: 'brightness(0.62) saturate(0.78) contrast(1.05)',
+  dawn: 'brightness(0.8) saturate(0.85)',
+};
+let timeMode = (localStorage.getItem('gta2.time') ?? 'dusk') as 'day' | 'dusk' | 'dawn';
+
 const FX_DEFAULT: FxSettings = { preset: 'cinematic', grain: 8, scan: false, sat: 100, con: 100, bri: 100 };
 let fx: FxSettings = { ...FX_DEFAULT };
 try {
@@ -833,7 +924,7 @@ setInterval(() => {
 }, 80);
 
 function applyFx(): void {
-  const parts = [FX_PRESETS[fx.preset] ?? ''];
+  const parts = [TIME_FILTER[timeMode] ?? '', FX_PRESETS[fx.preset] ?? ''];
   if (fx.sat !== 100) parts.push(`saturate(${fx.sat / 100})`);
   if (fx.con !== 100) parts.push(`contrast(${fx.con / 100})`);
   if (fx.bri !== 100) parts.push(`brightness(${fx.bri / 100})`);
@@ -871,6 +962,24 @@ $('fx-reset').addEventListener('click', () => {
   syncFxPanel();
   applyFx();
 });
+
+// Day / dusk / dawn colour grading, persisted across sessions.
+const TIMES = ['day', 'dusk', 'dawn'] as const;
+const daylightEl = $('daylight');
+const btnTime = $<HTMLButtonElement>('btn-time');
+function applyTimeMode(): void {
+  daylightEl.className = timeMode === 'day' ? '' : timeMode;
+  btnTime.textContent = `TIME: ${timeMode.toUpperCase()}`;
+  applyFx(); // time grading is folded into the canvas filter
+}
+applyTimeMode();
+btnTime.addEventListener('click', () => {
+  timeMode = TIMES[(TIMES.indexOf(timeMode) + 1) % TIMES.length];
+  localStorage.setItem('gta2.time', timeMode);
+  applyTimeMode();
+  audio.uiClick();
+});
+
 
 btnStart.addEventListener('click', closeMenuAndPlay);
 btnControls.addEventListener('click', () => {

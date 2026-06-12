@@ -31,6 +31,8 @@ export interface RenderEntity {
   dzdy?: number;
   /** GTA2 drop shadow (cars/peds): dark copy offset down-right */
   shadow?: boolean;
+  /** dusk/dawn: render headlight cone + tail-light glow for this car */
+  headlights?: boolean;
 }
 
 const Z_UP = new THREE.Vector3(0, 0, 1);
@@ -87,7 +89,7 @@ export class CityRenderer {
   private mount: HTMLElement;
   private spriteTex = new Map<string, THREE.Texture>();
   private fxTex = new Map<string, THREE.Texture>();
-  private entityMeshes = new Map<string, { mesh: THREE.Mesh; shadow?: THREE.Mesh; sprite: number; remap?: number; tint?: number; deltaKey?: string }>();
+  private entityMeshes = new Map<string, { mesh: THREE.Mesh; shadow?: THREE.Mesh; cone?: THREE.Mesh; tail?: THREE.Mesh; sprite: number; remap?: number; tint?: number; deltaKey?: string }>();
   private effects: Effect[] = [];
   private decals: THREE.Mesh[] = [];
   /** fading tire-mark decals */
@@ -231,6 +233,8 @@ export class CityRenderer {
         this.scene.remove(rec.mesh);
         disposeMesh(rec.mesh);
         if (rec.shadow) this.scene.remove(rec.shadow);
+        if (rec.cone) this.scene.remove(rec.cone);
+        if (rec.tail) this.scene.remove(rec.tail);
         rec = undefined;
         this.entityMeshes.delete(e.key);
       }
@@ -257,6 +261,30 @@ export class CityRenderer {
         }
         this.entityMeshes.set(e.key, rec);
       }
+      // headlights appear/disappear with the dusk setting
+      if (e.headlights && !rec.cone) {
+        const cgeo = new THREE.PlaneGeometry(1.3, 2.1);
+        const cmat = new THREE.MeshBasicMaterial({
+          map: this.effectTexture('headlight'), transparent: true,
+          depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0.85,
+        });
+        rec.cone = new THREE.Mesh(cgeo, cmat);
+        rec.cone.renderOrder = 3;
+        this.scene.add(rec.cone);
+        const tgeo = new THREE.PlaneGeometry(0.55, 0.34);
+        const tmat = new THREE.MeshBasicMaterial({
+          map: this.effectTexture('taillight'), transparent: true,
+          depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0.8,
+        });
+        rec.tail = new THREE.Mesh(tgeo, tmat);
+        rec.tail.renderOrder = 3;
+        this.scene.add(rec.tail);
+      } else if (!e.headlights && rec.cone) {
+        this.scene.remove(rec.cone);
+        if (rec.tail) this.scene.remove(rec.tail);
+        rec.cone = undefined;
+        rec.tail = undefined;
+      }
       rec.mesh.position.set(e.x, -e.y, e.z);
       // GTA2 sprite art faces image-bottom (player-confirmed: cars drove
       // visually backwards with the image-top assumption).
@@ -277,12 +305,22 @@ export class CityRenderer {
         rec.shadow.quaternion.copy(rec.mesh.quaternion);
         rec.shadow.scale.set(s, s, 1);
       }
+      if (rec.cone) {
+        const ca = Math.cos(e.angle);
+        const sa = Math.sin(e.angle);
+        rec.cone.position.set(e.x + ca * 1.45, -(e.y + sa * 1.45), e.z + 0.01);
+        rec.cone.rotation.z = -e.angle + Math.PI / 2;
+        rec.tail!.position.set(e.x - ca * 0.55, -(e.y - sa * 0.55), e.z + 0.012);
+        rec.tail!.rotation.z = -e.angle + Math.PI / 2;
+      }
     }
     for (const [key, rec] of this.entityMeshes) {
       if (!seen.has(key)) {
         this.scene.remove(rec.mesh);
         disposeMesh(rec.mesh);
         if (rec.shadow) this.scene.remove(rec.shadow);
+        if (rec.cone) this.scene.remove(rec.cone);
+        if (rec.tail) this.scene.remove(rec.tail);
         this.entityMeshes.delete(key);
       }
     }
@@ -434,6 +472,35 @@ export class CityRenderer {
         ctx.beginPath();
         ctx.arc(32, 32, 20, 0, Math.PI * 2);
         ctx.fill();
+        tex = new THREE.CanvasTexture(c);
+        this.fxTex.set(kind, tex);
+        return tex;
+      }
+      case 'headlight': {
+        // forward light cone: narrow bright base widening into a soft pool
+        const lg = ctx.createLinearGradient(32, 64, 32, 0);
+        lg.addColorStop(0, 'rgba(255,250,220,0.85)');
+        lg.addColorStop(0.45, 'rgba(255,245,200,0.4)');
+        lg.addColorStop(1, 'rgba(255,240,180,0)');
+        ctx.fillStyle = lg;
+        ctx.beginPath();
+        ctx.moveTo(22, 64);
+        ctx.lineTo(42, 64);
+        ctx.lineTo(58, 4);
+        ctx.lineTo(6, 4);
+        ctx.closePath();
+        ctx.fill();
+        tex = new THREE.CanvasTexture(c);
+        this.fxTex.set(kind, tex);
+        return tex;
+      }
+      case 'taillight': {
+        const tg = ctx.createRadialGradient(32, 32, 1, 32, 32, 30);
+        tg.addColorStop(0, 'rgba(255,60,40,0.9)');
+        tg.addColorStop(0.5, 'rgba(220,30,20,0.45)');
+        tg.addColorStop(1, 'rgba(180,20,10,0)');
+        ctx.fillStyle = tg;
+        ctx.fillRect(0, 0, 64, 64);
         tex = new THREE.CanvasTexture(c);
         this.fxTex.set(kind, tex);
         return tex;
