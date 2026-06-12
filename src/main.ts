@@ -967,16 +967,30 @@ $('fx-reset').addEventListener('click', () => {
 const TIMES = ['day', 'dusk', 'dawn'] as const;
 const daylightEl = $('daylight');
 const btnTime = $<HTMLButtonElement>('btn-time');
+const fxTime = $<HTMLSelectElement>('fx-time');
 function applyTimeMode(): void {
   daylightEl.className = timeMode === 'day' ? '' : timeMode;
   btnTime.textContent = `TIME: ${timeMode.toUpperCase()}`;
+  fxTime.value = timeMode;
   applyFx(); // time grading is folded into the canvas filter
 }
-applyTimeMode();
-btnTime.addEventListener('click', () => {
+function cycleTime(): void {
   timeMode = TIMES[(TIMES.indexOf(timeMode) + 1) % TIMES.length];
   localStorage.setItem('gta2.time', timeMode);
   applyTimeMode();
+}
+// in-game shortcut + FX panel selector
+window.addEventListener('keydown', (ev) => {
+  if (ev.code === 'KeyT' && world) cycleTime();
+});
+fxTime.addEventListener('change', () => {
+  timeMode = fxTime.value as typeof timeMode;
+  localStorage.setItem('gta2.time', timeMode);
+  applyTimeMode();
+});
+applyTimeMode();
+btnTime.addEventListener('click', () => {
+  cycleTime();
   audio.uiClick();
 });
 

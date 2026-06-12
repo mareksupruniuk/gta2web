@@ -89,7 +89,7 @@ export class CityRenderer {
   private mount: HTMLElement;
   private spriteTex = new Map<string, THREE.Texture>();
   private fxTex = new Map<string, THREE.Texture>();
-  private entityMeshes = new Map<string, { mesh: THREE.Mesh; shadow?: THREE.Mesh; cone?: THREE.Mesh; tail?: THREE.Mesh; sprite: number; remap?: number; tint?: number; deltaKey?: string }>();
+  private entityMeshes = new Map<string, { mesh: THREE.Mesh; shadow?: THREE.Mesh; lights?: THREE.Group; sprite: number; remap?: number; tint?: number; deltaKey?: string }>();
   private effects: Effect[] = [];
   private decals: THREE.Mesh[] = [];
   /** fading tire-mark decals */
@@ -233,8 +233,7 @@ export class CityRenderer {
         this.scene.remove(rec.mesh);
         disposeMesh(rec.mesh);
         if (rec.shadow) this.scene.remove(rec.shadow);
-        if (rec.cone) this.scene.remove(rec.cone);
-        if (rec.tail) this.scene.remove(rec.tail);
+        if (rec.lights) this.scene.remove(rec.lights);
         rec = undefined;
         this.entityMeshes.delete(e.key);
       }
@@ -262,28 +261,39 @@ export class CityRenderer {
         this.entityMeshes.set(e.key, rec);
       }
       // headlights appear/disappear with the dusk setting
-      if (e.headlights && !rec.cone) {
-        const cgeo = new THREE.PlaneGeometry(1.3, 2.1);
-        const cmat = new THREE.MeshBasicMaterial({
+      if (e.headlights && !rec.lights) {
+        // twin beams from the front corners + two small tail dots, sized
+        // from the car sprite so they sit exactly at the bumpers
+        const entry2 = this.sty.sprites[e.sprite];
+        const halfLen = entry2.h / 128;
+        const halfW = entry2.w / 128;
+        const group = new THREE.Group();
+        const beamMat = new THREE.MeshBasicMaterial({
           map: this.effectTexture('headlight'), transparent: true,
-          depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0.85,
+          depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0.55,
         });
-        rec.cone = new THREE.Mesh(cgeo, cmat);
-        rec.cone.renderOrder = 3;
-        this.scene.add(rec.cone);
-        const tgeo = new THREE.PlaneGeometry(0.55, 0.34);
-        const tmat = new THREE.MeshBasicMaterial({
+        for (const side of [-1, 1]) {
+          const beam = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 1.5), beamMat);
+          // beam texture base at canvas-bottom; rotate so the base meets the bumper
+          beam.rotation.z = -Math.PI / 2;
+          beam.position.set(halfLen + 0.68, side * halfW * 0.55, 0);
+          group.add(beam);
+        }
+        const tailMat = new THREE.MeshBasicMaterial({
           map: this.effectTexture('taillight'), transparent: true,
-          depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0.8,
+          depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0.7,
         });
-        rec.tail = new THREE.Mesh(tgeo, tmat);
-        rec.tail.renderOrder = 3;
-        this.scene.add(rec.tail);
-      } else if (!e.headlights && rec.cone) {
-        this.scene.remove(rec.cone);
-        if (rec.tail) this.scene.remove(rec.tail);
-        rec.cone = undefined;
-        rec.tail = undefined;
+        for (const side of [-1, 1]) {
+          const dot = new THREE.Mesh(new THREE.PlaneGeometry(0.17, 0.17), tailMat);
+          dot.position.set(-halfLen + 0.02, side * halfW * 0.6, 0);
+          group.add(dot);
+        }
+        group.renderOrder = 3;
+        this.scene.add(group);
+        rec.lights = group;
+      } else if (!e.headlights && rec.lights) {
+        this.scene.remove(rec.lights);
+        rec.lights = undefined;
       }
       rec.mesh.position.set(e.x, -e.y, e.z);
       // GTA2 sprite art faces image-bottom (player-confirmed: cars drove
@@ -305,13 +315,9 @@ export class CityRenderer {
         rec.shadow.quaternion.copy(rec.mesh.quaternion);
         rec.shadow.scale.set(s, s, 1);
       }
-      if (rec.cone) {
-        const ca = Math.cos(e.angle);
-        const sa = Math.sin(e.angle);
-        rec.cone.position.set(e.x + ca * 1.45, -(e.y + sa * 1.45), e.z + 0.01);
-        rec.cone.rotation.z = -e.angle + Math.PI / 2;
-        rec.tail!.position.set(e.x - ca * 0.55, -(e.y - sa * 0.55), e.z + 0.012);
-        rec.tail!.rotation.z = -e.angle + Math.PI / 2;
+      if (rec.lights) {
+        rec.lights.position.set(e.x, -e.y, e.z + 0.012);
+        rec.lights.rotation.z = -e.angle; // local +x = car forward
       }
     }
     for (const [key, rec] of this.entityMeshes) {
@@ -319,8 +325,7 @@ export class CityRenderer {
         this.scene.remove(rec.mesh);
         disposeMesh(rec.mesh);
         if (rec.shadow) this.scene.remove(rec.shadow);
-        if (rec.cone) this.scene.remove(rec.cone);
-        if (rec.tail) this.scene.remove(rec.tail);
+        if (rec.lights) this.scene.remove(rec.lights);
         this.entityMeshes.delete(key);
       }
     }
