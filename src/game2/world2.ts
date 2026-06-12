@@ -22,8 +22,8 @@ const BACK_SPEED = 0.9;
 const TURN_RATE = 3.8;
 const ENTER_CAR_DIST = 0.95;
 
-const PED_TARGET = 38;
-const CAR_TARGET = 16; // the original's dummy-traffic cap
+const PED_TARGET = 44;
+const CAR_TARGET = 18;
 const SPAWN_NEAR = 7; // min spawn distance from player (blocks)
 const SPAWN_FAR = 15;
 const DESPAWN = 22;
@@ -677,10 +677,10 @@ export class World2 {
         b.pos.x += nx * overlap * (1 - aShare);
         b.pos.y += ny * overlap * (1 - aShare);
         const relSpeed = Math.hypot(a.vel.x - b.vel.x, a.vel.y - b.vel.y);
-        if (relSpeed > 1.2) {
-          const dmg = relSpeed * 3;
-          a.applyDamage(dmg * 2 * aShare, this.emit);
-          b.applyDamage(dmg * 2 * (1 - aShare), this.emit);
+        if (relSpeed > 1.8) {
+          const dmg = relSpeed * 1.4;
+          a.applyDamage(dmg * 2 * aShare * a.handling.antiStrength, this.emit);
+          b.applyDamage(dmg * 2 * (1 - aShare) * b.handling.antiStrength, this.emit);
           this.emit({
             type: 'car_crash',
             pos: { x: (a.pos.x + b.pos.x) / 2, y: (a.pos.y + b.pos.y) / 2 },

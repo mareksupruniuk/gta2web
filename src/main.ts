@@ -763,6 +763,23 @@ for (const btn of document.querySelectorAll<HTMLButtonElement>('#districts butto
   });
 }
 
+// Day / dusk / dawn colour grading, persisted across sessions.
+const TIMES = ['day', 'dusk', 'dawn'] as const;
+const daylightEl = $('daylight');
+const btnTime = $<HTMLButtonElement>('btn-time');
+let timeMode = (localStorage.getItem('gta2.time') ?? 'day') as (typeof TIMES)[number];
+function applyTimeMode(): void {
+  daylightEl.className = timeMode === 'day' ? '' : timeMode;
+  btnTime.textContent = `TIME: ${timeMode.toUpperCase()}`;
+}
+applyTimeMode();
+btnTime.addEventListener('click', () => {
+  timeMode = TIMES[(TIMES.indexOf(timeMode) + 1) % TIMES.length];
+  localStorage.setItem('gta2.time', timeMode);
+  applyTimeMode();
+  audio.uiClick();
+});
+
 btnStart.addEventListener('click', closeMenuAndPlay);
 btnControls.addEventListener('click', () => {
   audio.uiClick();

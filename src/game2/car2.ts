@@ -24,6 +24,8 @@ export interface Handling {
   /** 0..1, how much the handbrake kills lateral grip */
   handbrakeSlide: number;
   mass: number;
+  /** crash-damage multiplier (gci anti_strength; tank 0.25 = very tough) */
+  antiStrength: number;
 }
 
 const TPS = 30; // gci units are per-tick at 30 fps
@@ -50,6 +52,7 @@ function fromPhysics(p: ModelPhysics): Handling {
     skidThreshold: p.skidThreshold * TPS,
     handbrakeSlide: p.handbrakeSlide,
     mass: p.mass,
+    antiStrength: p.antiStrength,
   };
 }
 
@@ -70,6 +73,7 @@ function fromRating(info: CarInfo): Handling {
     skidThreshold: 2.6,
     handbrakeSlide: 0.45,
     mass: 14,
+    antiStrength: 1,
   };
 }
 
@@ -274,8 +278,12 @@ export class Car2 {
     }
 
     // Event positions/speeds stay in block units; the audio layer rescales.
+    // Original cars shrug off most knocks: only solid hits damage, scaled
+    // by the model's anti_strength (docs §7).
     if (crashed && impactSpeed > 1.2) {
-      this.applyDamage(impactSpeed * 3.2, emit);
+      if (impactSpeed > 2.4) {
+        this.applyDamage(impactSpeed * 1.1 * this.handling.antiStrength, emit);
+      }
       if (this.crashCooldown === 0) {
         emit({ type: 'car_crash', pos: { ...this.pos }, speed: impactSpeed });
         this.crashCooldown = 0.4;
