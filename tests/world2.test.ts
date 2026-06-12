@@ -302,6 +302,25 @@ describe.skipIf(!haveData)('World2 on Downtown', () => {
     expect(busted || minD < d0 - 1).toBe(true);
   });
 
+  it('at 3+ stars a roadblock appears ahead of a fleeing driver', () => {
+    world.wanted.add(3000); // three stars
+    expect(world.wanted.level).toBeGreaterThanOrEqual(3);
+    // put the player in a fast car on a road
+    const car = world.cars[0];
+    world.drivers = world.drivers.filter((d) => d.car !== car);
+    car.driver = 'player';
+    world.player.car = car;
+    const copCarsBefore = world.cars.filter((c) => world['copCarIds'].has(c.id)).length;
+    // fake sustained speed so the dispatcher sees a fleeing driver
+    for (let i = 0; i < 60 * 22; i++) {
+      car.vel.x = 5;
+      car.vel.y = 0;
+      world.update(1 / 60, NEUTRAL);
+    }
+    const copCarsAfter = world.cars.filter((c) => world['copCarIds'].has(c.id)).length;
+    expect(copCarsAfter).toBeGreaterThan(copCarsBefore);
+  });
+
   it('an arresting cop busts the player: weapons gone, wanted cleared, moved to the station', () => {
     world.wanted.add(1000); // hot
     world.player.inventory.add('shotgun', 12);

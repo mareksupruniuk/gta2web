@@ -38,6 +38,7 @@ let accumulator = 0;
 let respawnTimer = 0;
 let msgTimer = 0;
 let lastArea: string | null = null;
+let lastWanted = 0;
 let rafId = 0;
 let lastT = 0;
 /** attack key held this frame — drives punch/firing stances */
@@ -107,7 +108,15 @@ function updateHud(w: World2): void {
   const wantedEl = $('wanted');
   const lvl = w.wanted.level;
   wantedEl.classList.toggle('visible', lvl > 0);
-  wantedEl.textContent = '👮'.repeat(lvl);
+  if (lvl !== lastWanted) {
+    wantedEl.textContent = '👮'.repeat(lvl);
+    if (lvl > lastWanted) {
+      wantedEl.classList.remove('flash');
+      void wantedEl.offsetWidth; // restart the CSS animation
+      wantedEl.classList.add('flash');
+    }
+    lastWanted = lvl;
+  }
 }
 
 function openMenu(): void {

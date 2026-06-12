@@ -138,6 +138,8 @@ export class World2 {
   /** bail-out grace: the car just exited can't run the player over briefly */
   private exitedCar: Car2 | null = null;
   private exitGrace = 0;
+  /** seconds until the next roadblock may be thrown up (wanted >= 3) */
+  private roadblockTimer = 8;
 
   constructor(map: CityMap, sty: Sty, seed = 1999, spawn?: { x: number; y: number }) {
     this.map = map;
@@ -826,6 +828,57 @@ export class World2 {
     const activeCopCars = this.pursuits.length;
     const wantCars = Math.min(level, 4);
     if (activeCopCars < wantCars) this.spawnCopCar();
+
+    // GTA2 roadblocks at 3+ stars: cop cars parked across the road ahead
+    // of a fleeing driver, officers crouched behind.
+    this.roadblockTimer = Math.max(0, this.roadblockTimer - 1);
+    if (level >= 3 && this.roadblockTimer === 0 && this.player.car) {
+      const v = this.player.car.vel;
+      const speed = Math.hypot(v.x, v.y);
+      if (speed > 3) {
+        const ahead = {
+          x: this.player.pos.x + (v.x / speed) * 12,
+          y: this.player.pos.y + (v.y / speed) * 12,
+        };
+        if (this.spawnRoadblock(ahead)) this.roadblockTimer = 18;
+      }
+    }
+  }
+
+  /** Park cop cars across the road near `at`; cops take position behind. */
+  private spawnRoadblock(at: Vec2): boolean {
+    const info = this.copInfo();
+    if (!info) return false;
+    const spot = this.roadSpawns
+      .filter((s) => dist(s, at) < 3 && dist(s, this.player.pos) > 7)
+      .sort((a, b) => dist(a, at) - dist(b, at))[0];
+    if (!spot) return false;
+    const dir = dirNameFromArrows(this.map.arrowsAt(spot.x, spot.y, spot.z), this.rng);
+    if (!dir) return false;
+    const road = dirAngle(dir);
+    const across = road + Math.PI / 2;
+    const cax = Math.cos(across);
+    const cay = Math.sin(across);
+    let placed = 0;
+    for (const off of [-0.85, 0.85]) {
+      const cx = spot.x + cax * off;
+      const cy = spot.y + cay * off;
+      if (!this.map.canMove(spot.x, spot.y, cx, cy, spot.z, 0.6)) continue;
+      if (this.cars.some((c) => dist(c.pos, { x: cx, y: cy }) < 1.2)) continue;
+      const car = new Car2(info, -1, { x: cx, y: cy }, spot.z, across);
+      this.cars.push(car);
+      this.copCarIds.add(car.id);
+      placed++;
+      // officer behind the car, facing the player's approach
+      const back = {
+        x: cx - Math.cos(road) * (car.width / 2 + 0.3),
+        y: cy - Math.sin(road) * (car.width / 2 + 0.3),
+      };
+      if (this.map.canMove(cx, cy, back.x, back.y, spot.z, 0.6)) {
+        this.peds.push(new Cop(back, spot.z, this.wanted.level));
+      }
+    }
+    return placed > 0;
   }
 
   private copInfo(): CarInfo | null {

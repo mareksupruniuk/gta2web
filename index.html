@@ -90,6 +90,10 @@
         font-size: 20px; letter-spacing: 2px; margin-top: 2px;
         color: #4488ff;
       }
+      #wanted.flash { animation: wanted-flash 0.5s 4; }
+      @keyframes wanted-flash {
+        50% { filter: brightness(2.2) drop-shadow(0 0 6px #6af); }
+      }
       #msg {
         position: absolute; top: 22%; left: 0; right: 0; text-align: center;
         color: #ffd700; font-family: 'Arial Black', Arial, sans-serif;
