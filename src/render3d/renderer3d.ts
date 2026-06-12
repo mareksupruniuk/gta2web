@@ -399,12 +399,12 @@ export class CityRenderer {
         // one soft pool just past the bumper, like the original's dusk look
         const poolMat = new THREE.MeshBasicMaterial({
           map: this.effectTexture('headlight'), transparent: true,
-          depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0.5,
+          depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0.42,
         });
-        const poolW = Math.max(0.7, halfW * 2 * 1.45);
-        const pool = new THREE.Mesh(new THREE.PlaneGeometry(poolW, 0.85), poolMat);
+        const poolW = Math.max(0.65, halfW * 2 * 1.25);
+        const pool = new THREE.Mesh(new THREE.PlaneGeometry(poolW, 0.78), poolMat);
         pool.rotation.z = -Math.PI / 2; // texture base (bright) toward the car
-        pool.position.set(halfLen + 0.38, 0, 0);
+        pool.position.set(halfLen + 0.3, 0, 0);
         group.add(pool);
         const tailMat = new THREE.MeshBasicMaterial({
           map: this.effectTexture('taillight'), transparent: true,
@@ -609,18 +609,21 @@ export class CityRenderer {
         return tex;
       }
       case 'headlight': {
-        // original-style pool: a soft ellipse of light just ahead of the
-        // bumper, brightest at its base (canvas bottom), no long cone
-        const lg = ctx.createRadialGradient(32, 56, 3, 32, 44, 40);
-        lg.addColorStop(0, 'rgba(255,248,215,0.75)');
-        lg.addColorStop(0.45, 'rgba(255,242,195,0.35)');
-        lg.addColorStop(1, 'rgba(255,235,175,0)');
-        ctx.fillStyle = lg;
+        // original-style pool: a warm soft ellipse just ahead of the bumper.
+        // The gradient must die out WELL inside the canvas — clipping at the
+        // texture border showed up as hard rectangular pool edges.
         ctx.save();
-        ctx.translate(32, 40);
-        ctx.scale(1.0, 0.72); // squash into an ellipse
-        ctx.translate(-32, -40);
-        ctx.fillRect(0, 0, 64, 80);
+        ctx.translate(32, 38);
+        ctx.scale(1.0, 0.78);
+        const lg = ctx.createRadialGradient(0, 14, 2, 0, 0, 28);
+        lg.addColorStop(0, 'rgba(255,244,200,0.62)');
+        lg.addColorStop(0.5, 'rgba(255,236,180,0.26)');
+        lg.addColorStop(0.85, 'rgba(255,230,165,0.05)');
+        lg.addColorStop(1, 'rgba(255,228,160,0)');
+        ctx.fillStyle = lg;
+        ctx.beginPath();
+        ctx.arc(0, 0, 28, 0, Math.PI * 2);
+        ctx.fill();
         ctx.restore();
         tex = new THREE.CanvasTexture(c);
         this.fxTex.set(kind, tex);
